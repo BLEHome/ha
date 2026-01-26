@@ -61,9 +61,9 @@ class BLEHomeRSSISensor(SensorEntity):
         return DeviceInfo(
             connections={(CONNECTION_BLUETOOTH, self._mac)},
             identifiers={(DOMAIN, self._mac)},
-            name="BLE Gateway",
+            name="BLE Mesh Gateway",
             manufacturer=MANUFACTURER,
-            model="BLEHome Gateway",
+            model=f"{self.controller.device_type}.{self.controller.mac_suffix}.gateway",
         )
 
     @property

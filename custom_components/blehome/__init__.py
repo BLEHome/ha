@@ -39,10 +39,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     name = entry.data.get("name", new_title)
     service_uuid: str = entry.data[CONF_SERVICE_UUID]
     char_uuid: str = entry.data[CONF_CHAR_UUID]
+    device_type = entry.data.get("device_type", "tled")
+    mac_suffix = entry.data.get("mac_suffix", mac.replace(":", "").replace("-", "")[-4:].lower())
     
     # Create BLEHome controller instance
     controller = BLEHomeController(hass, mac, service_uuid, char_uuid)
     controller.name = name
+    controller.device_type = device_type
+    controller.mac_suffix = mac_suffix
     controller.config_entry = entry
     
     # Load subdevices from options

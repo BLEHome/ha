@@ -107,9 +107,9 @@ class BLEHomeLight(LightEntity):
     def device_info(self) -> DeviceInfo:
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.controller.mac_address}_{self.address:04X}")},
-            name=f"Light {self.address:04X}",
+            name=f"BLE Mesh Light",
             manufacturer=MANUFACTURER,
-            model=self._device_id,
+            model=f"{self.controller.device_type}.{self.controller.mac_suffix}.light.{self.address:04x}",
             via_device=(DOMAIN, self.controller.mac_address),
         )
 

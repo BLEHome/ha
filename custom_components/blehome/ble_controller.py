@@ -45,6 +45,8 @@ class BLEHomeController:
         self.base_timeout = 15.0
         self.subdevices: dict[int, dict[str, Any]] = {}
         self.gateway_address = 0x0001
+        self.device_type = "tled"
+        self.mac_suffix = ""
         self.config_entry: Optional[ConfigEntry] = None
         self._connection_lock = asyncio.Lock()
         self._heartbeat_task: Optional[asyncio.Task] = None
@@ -217,7 +219,7 @@ class BLEHomeController:
         if address in self.subdevices:
             return
 
-        name = f"blehome.light.{address:04x}"
+        name = f"blehome.{self.device_type}.light.{address:04x}"
         self.subdevices[address] = {
             "name": name,
             "state": {"on": is_on, "brightness": brightness}
