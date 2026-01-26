@@ -107,7 +107,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 data={
                     CONF_MAC: self._selected_device.address,
                     CONF_NAME: device_name,
-                    "device_type": prefix.lower(),
+                    "device_type": f"blehome.{prefix.lower()}",
                     "mac_suffix": mac_suffix.lower(),
                     CONF_SERVICE_UUID: user_input["service_uuid"],
                     CONF_CHAR_UUID: user_input["char_uuid"]
@@ -169,7 +169,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
             # Extract prefix from name for manual entry as well
             prefix = user_input[CONF_NAME].split()[0].lower()
             mac_suffix = mac.replace(":", "").replace("-", "")[-4:].lower()
-            user_input["device_type"] = prefix
+            user_input["device_type"] = f"blehome.{prefix}"
             user_input["mac_suffix"] = mac_suffix
 
             return self.async_create_entry(
