@@ -1,6 +1,7 @@
 {
   "domain": "blehome",
   "name": "BLEHome",
+  "version": "1.0.0",
   "integration_type": "device",
   "config_flow": true,
   "documentation": "https://bthome.org",
