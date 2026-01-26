@@ -1,0 +1,78 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Setup BLEHome",
+        "description": "Choose how you want to add your device.",
+        "data": {
+          "setup_method": "Setup Method"
+        }
+      },
+      "scan": {
+        "title": "Scanning for Devices",
+        "description": "Found {count} devices. Please select your BLEHome gateway.",
+        "data": {
+          "device": "Select Device"
+        }
+      },
+      "select_service": {
+        "title": "Select Communication Channel",
+        "description": "The device {device} has multiple services. Please select the one used for BLE communication.",
+        "data": {
+          "service_uuid": "Service UUID",
+          "char_uuid": "Characteristic UUID"
+        }
+      },
+      "manual": {
+        "title": "Manual Configuration",
+        "data": {
+          "name": "Name",
+          "mac": "MAC Address",
+          "service_uuid": "Service UUID",
+          "char_uuid": "Characteristic UUID"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Confirm Device",
+        "description": "Do you want to add {name} ({address})?"
+      }
+    },
+    "error": {
+      "no_devices_found": "No BLEHome devices found within range.",
+      "scan_failed": "Failed to scan for Bluetooth devices.",
+      "service_scan_failed": "Failed to retrieve services from the device.",
+      "invalid_mac": "The MAC address provided is invalid.",
+      "no_services_found": "No suitable services found on this device."
+    },
+    "abort": {
+      "already_configured": "This device is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BLEHome Options",
+        "data": {
+          "subdevices": "Subdevices configuration"
+        }
+      }
+    }
+  },
+  "entity": {
+    "text": {
+      "debug_write": {
+        "name": "Protocol Debug"
+      }
+    },
+    "sensor": {
+      "rssi": {
+        "name": "Signal Strength"
+      }
+    },
+    "light": {
+      "mesh_light": {
+        "name": "Light"
+      }
+    }
+  }
+}

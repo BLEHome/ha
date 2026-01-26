@@ -1,0 +1,78 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "设置 BLEHome",
+        "description": "选择您希望添加设备的方式。",
+        "data": {
+          "setup_method": "配置方式"
+        }
+      },
+      "scan": {
+        "title": "正在扫描设备",
+        "description": "发现了 {count} 个设备。请选择您的 BLEHome 网关。",
+        "data": {
+          "device": "选择设备"
+        }
+      },
+      "select_service": {
+        "title": "选择通信通道",
+        "description": "设备 {device} 拥有多个服务。请选择用于 BLE 通信的服务和特征值。",
+        "data": {
+          "service_uuid": "服务 UUID",
+          "char_uuid": "特征值 UUID"
+        }
+      },
+      "manual": {
+        "title": "手动配置",
+        "data": {
+          "name": "名称",
+          "mac": "MAC 地址",
+          "service_uuid": "服务 UUID",
+          "char_uuid": "特征值 UUID"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "确认设备",
+        "description": "您确定要添加 {name} ({address}) 吗？"
+      }
+    },
+    "error": {
+      "no_devices_found": "范围内未发现 BLEHome 设备。",
+      "scan_failed": "扫描蓝牙设备失败。",
+      "service_scan_failed": "无法从设备获取服务信息。",
+      "invalid_mac": "提供的 MAC 地址无效。",
+      "no_services_found": "在该设备上未发现合适的服务。"
+    },
+    "abort": {
+      "already_configured": "该设备已经配置过了。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "BLEHome 选项",
+        "data": {
+          "subdevices": "子设备配置"
+        }
+      }
+    }
+  },
+  "entity": {
+    "text": {
+      "debug_write": {
+        "name": "协议调试"
+      }
+    },
+    "sensor": {
+      "rssi": {
+        "name": "信号强度"
+      }
+    },
+    "light": {
+      "mesh_light": {
+        "name": "灯"
+      }
+    }
+  }
+}
