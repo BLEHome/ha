@@ -48,7 +48,7 @@ class BLEHomeRSSISensor(SensorEntity):
     def __init__(self, controller: BLEHomeController) -> None:
         """Initialize the sensor."""
         self.controller = controller
-        self._mac = controller.mac_address
+        self._mac = controller.mac_address.upper()
         self._attr_unique_id = f"{self._mac}_rssi"
         self._rssi: int | None = None
 

@@ -73,6 +73,11 @@
       "mesh_light": {
         "name": "Light"
       }
+    },
+    "switch": {
+      "bthome_mock": {
+        "name": "BTHome Mock Injection"
+      }
     }
   }
 }

@@ -62,7 +62,7 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 
 ## 联系与社区
 
-- **官方网站**: [bthome.org](https://bthome.org)
+- **官方网站**: [blehome.org](https://blehome.org)
 - **GitHub**: [blehome/ha](https://github.com/blehome/ha)
 - **协议标准**: BLEHome Mesh 控制协议 v1.0
 - **开源协议**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)

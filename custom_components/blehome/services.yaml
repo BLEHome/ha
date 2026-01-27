@@ -1,0 +1,55 @@
+debug_status:
+  name: Debug status
+  description: Log BLEHome bluetooth proxy state for debugging.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Target config entry id (optional).
+      required: false
+      example: "1234567890abcdef"
+      selector:
+        text:
+    mac:
+      name: Gateway MAC
+      description: Target gateway MAC address (optional).
+      required: false
+      example: "70:19:88:C9:27:89"
+      selector:
+        text:
+
+debug_inject_bthome:
+  name: Debug inject BTHome
+  description: Inject a mock BTHome advertisement via the gateway.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Target config entry id (optional).
+      required: false
+      example: "1234567890abcdef"
+      selector:
+        text:
+    mac:
+      name: Gateway MAC
+      description: Target gateway MAC address (optional).
+      required: false
+      example: "70:19:88:C9:27:89"
+      selector:
+        text:
+    target_mac:
+      name: Target device MAC
+      description: Mock BTHome device MAC address (optional).
+      required: false
+      example: "AA:BB:CC:DD:EE:01"
+      selector:
+        text:
+    temperature:
+      name: Temperature (C)
+      description: Mock temperature value in Celsius (optional).
+      required: false
+      example: 25.0
+      selector:
+        number:
+          min: -40
+          max: 85
+          step: 0.01
+          mode: box

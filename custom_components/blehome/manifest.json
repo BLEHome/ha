@@ -1,13 +1,14 @@
 {
   "domain": "blehome",
   "name": "BLEHome",
-  "version": "1.0.0",
+  "version": "1.4.0",
   "integration_type": "device",
   "config_flow": true,
-  "documentation": "https://bthome.org",
+  "documentation": "https://blehome.org",
   "issue_tracker": "https://github.com/blehome/ha/issues",
   "requirements": ["bleak>=0.19.5"],
-  "dependencies": ["bluetooth"],
+  "dependencies": ["bluetooth", "bthome"],
+  "after_dependencies": ["bluetooth", "bthome"],
   "bluetooth": [
     {
       "service_uuid": "0000ffe0-0000-1000-8000-00805f9b34fb"

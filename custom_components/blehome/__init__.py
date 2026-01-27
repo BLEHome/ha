@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
@@ -16,11 +18,15 @@ from .const import (
     CONF_MAC, 
     CONF_SERVICE_UUID, 
     CONF_CHAR_UUID, 
-    CONF_SUBDEVICES
+    CONF_SUBDEVICES,
+    CONF_BTHOME_MOCK,
 )
 from .ble_controller import BLEHomeController
 
 _LOGGER = logging.getLogger(__name__)
+_SERVICES_REGISTERED_KEY = "_services_registered"
+SERVICE_DEBUG_STATUS = "debug_status"
+SERVICE_DEBUG_INJECT = "debug_inject_bthome"
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BLEHome from a config entry."""
@@ -58,6 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except (ValueError, TypeError):
              _LOGGER.warning("Ignored invalid subdevice address: %s", k)
     controller.subdevices = subdevices
+    controller.bthome_mock_enabled = bool(entry.options.get(CONF_BTHOME_MOCK, False))
     
     # Identify gateway's own mesh address
     if subdevices:
@@ -71,6 +78,68 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = controller
+    _LOGGER.info("BTHome integration loaded: %s", "bthome" in hass.config.components)
+
+    # Register debug services once
+    if not hass.data[DOMAIN].get(_SERVICES_REGISTERED_KEY):
+        hass.data[DOMAIN][_SERVICES_REGISTERED_KEY] = True
+
+        async def _handle_debug_status(call) -> None:
+            entry_id = call.data.get("entry_id")
+            mac = call.data.get("mac")
+            controllers = [
+                c for k, c in hass.data[DOMAIN].items()
+                if k != _SERVICES_REGISTERED_KEY
+            ]
+            if entry_id:
+                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
+            elif mac:
+                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+
+            for c in controllers:
+                if c:
+                    c.debug_dump_bluetooth_state()
+
+        async def _handle_debug_inject(call) -> None:
+            entry_id = call.data.get("entry_id")
+            mac = call.data.get("mac")
+            temp_c = call.data.get("temperature")
+            target_mac = call.data.get("target_mac")
+            controllers = [
+                c for k, c in hass.data[DOMAIN].items()
+                if k != _SERVICES_REGISTERED_KEY
+            ]
+            if entry_id:
+                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
+            elif mac:
+                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+
+            for c in controllers:
+                if c:
+                    c.debug_dump_bluetooth_state()
+                    c.debug_inject_mock_bthome(mac=target_mac, temp_c=temp_c)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DEBUG_STATUS,
+            _handle_debug_status,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+                vol.Optional("mac"): str,
+            }),
+        )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_DEBUG_INJECT,
+            _handle_debug_inject,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+                vol.Optional("mac"): str,
+                vol.Optional("target_mac"): str,
+                vol.Optional("temperature"): vol.Coerce(float),
+            }),
+        )
     
     # Connect to device
     connected = await controller.connect()
@@ -113,6 +182,7 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
             continue
     
     controller.subdevices = subdevices
+    controller.bthome_mock_enabled = bool(entry.options.get(CONF_BTHOME_MOCK, False))
     _LOGGER.info("Subdevice configuration updated for %s", controller.mac_address)
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

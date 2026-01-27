@@ -73,6 +73,11 @@
       "mesh_light": {
         "name": "灯"
       }
+    },
+    "switch": {
+      "bthome_mock": {
+        "name": "BTHome 模拟调试"
+      }
     }
   }
 }

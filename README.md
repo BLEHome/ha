@@ -62,7 +62,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Contact & Community
 
-- **Website**: [bthome.org](https://bthome.org)
+- **Website**: [blehome.org](https://blehome.org)
 - **GitHub**: [blehome/ha](https://github.com/blehome/ha)
 - **Standard**: BLEHome Mesh Control Protocol v1.0
 - **License**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
