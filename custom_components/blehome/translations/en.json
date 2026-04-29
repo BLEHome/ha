@@ -52,8 +52,9 @@
     "step": {
       "init": {
         "title": "BLEHome Options",
+        "description": "You have {count} sub-device(s) configured. Select the ones to remove.",
         "data": {
-          "subdevices": "Subdevices configuration"
+          "remove_subdevices": "Remove sub-devices"
         }
       }
     }
@@ -78,6 +79,12 @@
       "bthome_mock": {
         "name": "BTHome Mock Injection"
       }
+    }
+  },
+  "services": {
+    "remove_subdevice": {
+      "name": "Remove sub-device",
+      "description": "Remove a mesh sub-device from the gateway and clean up its registries."
     }
   }
 }

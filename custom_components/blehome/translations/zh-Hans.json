@@ -52,8 +52,9 @@
     "step": {
       "init": {
         "title": "BLEHome 选项",
+        "description": "当前已配置 {count} 个子设备。选择要移除的设备。",
         "data": {
-          "subdevices": "子设备配置"
+          "remove_subdevices": "移除子设备"
         }
       }
     }
@@ -78,6 +79,12 @@
       "bthome_mock": {
         "name": "BTHome 模拟调试"
       }
+    }
+  },
+  "services": {
+    "remove_subdevice": {
+      "name": "移除子设备",
+      "description": "从网关移除一个 Mesh 子设备并清理其注册表条目。"
     }
   }
 }

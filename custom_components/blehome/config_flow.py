@@ -7,18 +7,20 @@ from typing import Any
 
 import voluptuous as vol
 from bleak import BleakClient, BleakScanner
-from homeassistant.config_entries import ConfigFlow, ConfigEntry
+from homeassistant.config_entries import ConfigFlow, ConfigEntry, OptionsFlow
 from homeassistant.const import CONF_NAME, CONF_MAC
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
+from homeassistant.helpers import selector
 
 from .const import (
-    DOMAIN, 
-    DEFAULT_PREFIX, 
-    DEFAULT_SERVICE_UUID, 
+    DOMAIN,
+    DEFAULT_PREFIX,
+    DEFAULT_SERVICE_UUID,
     DEFAULT_CHAR_UUID,
     CONF_SERVICE_UUID,
-    CONF_CHAR_UUID
+    CONF_CHAR_UUID,
+    CONF_SUBDEVICES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -185,4 +187,60 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_SERVICE_UUID, default=DEFAULT_SERVICE_UUID): str,
                 vol.Required(CONF_CHAR_UUID, default=DEFAULT_CHAR_UUID): str
             })
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OptionsFlow:
+        """Get the options flow for this handler."""
+        return BLEHomeOptionsFlowHandler()
+
+
+class BLEHomeOptionsFlowHandler(OptionsFlow):
+    """Handle BLEHome options."""
+
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Manage options - remove sub-devices."""
+        if user_input is not None:
+            removed = set(user_input.get("remove_subdevices", []))
+            existing = self.config_entry.options.get(CONF_SUBDEVICES, {})
+            new_subdevices = {
+                addr: info
+                for addr, info in existing.items()
+                if addr not in removed
+            }
+            new_options = dict(self.config_entry.options)
+            new_options[CONF_SUBDEVICES] = new_subdevices
+            return self.async_create_entry(title="", data=new_options)
+
+        subdevices = self.config_entry.options.get(CONF_SUBDEVICES, {})
+        if not subdevices:
+            return self.async_create_entry(
+                title="",
+                data=self.config_entry.options,
+            )
+
+        choices = {}
+        for addr_str, info in subdevices.items():
+            try:
+                addr_int = int(addr_str)
+                name = info.get("name", "Sub-device")
+                choices[addr_str] = f"{name} (0x{addr_int:04X})"
+            except (ValueError, TypeError):
+                continue
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema({
+                vol.Optional("remove_subdevices", default=[]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            {"value": addr_str, "label": label}
+                            for addr_str, label in choices.items()
+                        ],
+                        multiple=True,
+                    ),
+                ),
+            }),
+            description_placeholders={"count": str(len(choices))},
         )

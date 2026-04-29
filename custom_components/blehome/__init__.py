@@ -8,8 +8,10 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr, entity_registry as er
 
 from .const import (
     DOMAIN, 
@@ -27,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 _SERVICES_REGISTERED_KEY = "_services_registered"
 SERVICE_DEBUG_STATUS = "debug_status"
 SERVICE_DEBUG_INJECT = "debug_inject_bthome"
+SERVICE_REMOVE_SUBDEVICE = "remove_subdevice"
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BLEHome from a config entry."""
@@ -140,7 +143,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 vol.Optional("temperature"): vol.Coerce(float),
             }),
         )
-    
+
+        async def _handle_remove_subdevice(call) -> None:
+            """Remove a sub-device from the gateway and clean up registries."""
+            entry_id = call.data.get("entry_id")
+            mac = call.data.get("mac")
+            mesh_address = call.data.get("mesh_address")
+
+            controllers = [
+                c for k, c in hass.data[DOMAIN].items()
+                if k != _SERVICES_REGISTERED_KEY
+            ]
+            if entry_id:
+                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
+            elif mac:
+                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+
+            for controller in controllers:
+                if not controller:
+                    continue
+                if mesh_address not in controller.subdevices:
+                    _LOGGER.warning(
+                        "Sub-device 0x%04X not found for %s",
+                        mesh_address, controller.mac_address
+                    )
+                    continue
+
+                entry = controller.config_entry
+                new_options = dict(entry.options)
+                subdevices_config = new_options.get(CONF_SUBDEVICES, {}).copy()
+                subdevices_config.pop(str(mesh_address), None)
+                new_options[CONF_SUBDEVICES] = subdevices_config
+                hass.config_entries.async_update_entry(entry, options=new_options)
+                _LOGGER.info(
+                    "Removed sub-device 0x%04X from %s",
+                    mesh_address, controller.mac_address
+                )
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_REMOVE_SUBDEVICE,
+            _handle_remove_subdevice,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+                vol.Optional("mac"): str,
+                vol.Required("mesh_address"): vol.Coerce(int),
+            }),
+        )
+
     # Connect to device
     connected = await controller.connect()
     if not connected:
@@ -159,10 +209,10 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Handle options update without reloading the integration."""
     controller: BLEHomeController = hass.data[DOMAIN][entry.entry_id]
     old_subdevices = set(controller.subdevices.keys())
-    
+
     raw_subdevices: dict[str, Any] = entry.options.get(CONF_SUBDEVICES, {})
     subdevices: dict[int, Any] = {}
-    
+
     for k, v in raw_subdevices.items():
         try:
             addr = int(k)
@@ -173,14 +223,30 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
                     f"{DOMAIN}_new_subdevice_found",
                     {
                         "controller_mac": controller.mac_address,
-                        "address": addr, 
+                        "address": addr,
                         "name": v["name"],
                         "state": v.get("state", {"on": False, "brightness": 0})
                     }
                 )
         except (ValueError, TypeError):
             continue
-    
+
+    # Clean up removed sub-devices from entity & device registries
+    removed = old_subdevices - set(subdevices.keys())
+    if removed:
+        er_registry = er.async_get(hass)
+        dr_registry = dr.async_get(hass)
+        for addr in removed:
+            unique_id = f"{controller.mac_address}_{addr}"
+            entity_id = er_registry.async_get_entity_id(Platform.LIGHT, DOMAIN, unique_id)
+            if entity_id:
+                er_registry.async_remove(entity_id)
+            device_identifier = (DOMAIN, f"{controller.mac_address}_{addr:04X}")
+            device = dr_registry.async_get_device(identifiers={device_identifier})
+            if device:
+                dr_registry.async_remove_device(device.id)
+                _LOGGER.info("Cleaned up removed sub-device 0x%04X (%s)", addr, unique_id)
+
     controller.subdevices = subdevices
     controller.bthome_mock_enabled = bool(entry.options.get(CONF_BTHOME_MOCK, False))
     _LOGGER.info("Subdevice configuration updated for %s", controller.mac_address)
