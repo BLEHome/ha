@@ -577,7 +577,9 @@ class BLEHomeController:
         ver = await self.async_query_version(address)
         if ver:
             self.subdevices[address]["version"] = ver
-            self._update_subdevice_version_registry(address, ver)
+        else:
+            self.subdevices[address].pop("version", None)
+        self._update_subdevice_version_registry(address, ver)
 
     async def async_scan_mesh(self, scan_range: int = 16) -> None:
         """Scan the mesh network for devices."""
@@ -912,16 +914,19 @@ class BLEHomeController:
             ver = await self.async_query_version(addr)
             if ver:
                 self.subdevices[addr]["version"] = ver
-                self._update_subdevice_version_registry(addr, ver)
+            else:
+                self.subdevices[addr].pop("version", None)
+            self._update_subdevice_version_registry(addr, ver)
             await asyncio.sleep(0.5)
 
-    def _update_subdevice_version_registry(self, address: int, version: tuple[int, int]) -> None:
-        """Update device registry sw_version for a sub-device."""
+    def _update_subdevice_version_registry(self, address: int, version: Optional[tuple[int, int]]) -> None:
+        """Update or clear device registry sw_version for a sub-device."""
         dr_registry = dr.async_get(self.hass)
         device_id = (DOMAIN, f"{self.mac_address}_{address:04X}")
         device = dr_registry.async_get_device(identifiers={device_id})
         if device:
-            dr_registry.async_update_device(device.id, sw_version=f"v{version[0]}.{version[1]}")
+            sw_ver = f"v{version[0]}.{version[1]}" if version else None
+            dr_registry.async_update_device(device.id, sw_version=sw_ver)
 
     async def __aenter__(self) -> BLEHomeController:
         """Async context manager enter."""
