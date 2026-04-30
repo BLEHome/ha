@@ -30,6 +30,7 @@ except ImportError:
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 
 from .const import (
     DOMAIN,
@@ -226,6 +227,9 @@ class BLEHomeController:
         self._mock_packet_id = 0
         self._logged_bt_manager_methods = False
         self.bthome_mock_enabled = False
+        self._version_event: Optional[asyncio.Event] = None
+        self._version_result: Optional[tuple[int, int]] = None
+        self._version_lock = asyncio.Lock()
 
     async def connect(
         self, 
@@ -286,6 +290,10 @@ class BLEHomeController:
 
                         self.hass.loop.call_later(10.0, start_scan)
 
+                        # Query firmware versions for known sub-devices (old devices silently skip)
+                        if self.subdevices:
+                            self.hass.async_create_task(self._query_all_versions())
+
                         self.hass.bus.async_fire(
                             f"{DOMAIN}_availability_changed", {"connected": True}
                         )
@@ -294,7 +302,6 @@ class BLEHomeController:
                         if HAS_BLUETOOTH_SCANNER and not self.scanner:
                             try:
                                 source_mac = self.device_address.upper()
-                                from homeassistant.helpers import device_registry as dr
                                 registry = dr.async_get(self.hass)
                                 
                                 # Ensure the gateway device exists in registry
@@ -422,6 +429,13 @@ class BLEHomeController:
 
     def _notification_handler(self, sender: int, data: bytearray) -> None:
         """Handle notification data."""
+        # Handle CMD_GET_VERSION_ACK (0x8B): [cmd, addrL, addrH, ver_major, ver_minor, status]
+        if len(data) == 6 and data[0] == 0x8B and data[5] == 0x00:
+            if self._version_event and not self._version_event.is_set():
+                self._version_result = (data[3], data[4])
+                self._version_event.set()
+            return
+
         if len(data) < 7 or data[0] != HEADER:
             return
             
@@ -558,6 +572,12 @@ class BLEHomeController:
             }
             new_options["subdevices"] = subdevices_config
             self.hass.config_entries.async_update_entry(self.config_entry, options=new_options)
+
+        # Asynchronously query firmware version (old devices silently skip)
+        ver = await self.async_query_version(address)
+        if ver:
+            self.subdevices[address]["version"] = ver
+            self._update_subdevice_version_registry(address, ver)
 
     async def async_scan_mesh(self, scan_range: int = 16) -> None:
         """Scan the mesh network for devices."""
@@ -859,6 +879,49 @@ class BLEHomeController:
                 {"address": address, "state": self.subdevices[address]["state"]}
             )
         return success
+
+    async def async_query_version(self, address: int) -> Optional[tuple[int, int]]:
+        """Query firmware version from a mesh sub-device.
+
+        Returns (major, minor) or None if device doesn't respond (old firmware).
+        Serialized via _version_lock to prevent cross-talk between concurrent callers.
+        """
+        async with self._version_lock:
+            self._version_event = asyncio.Event()
+            self._version_result = None
+
+            cmd = bytes([0xAB, address & 0xFF, (address >> 8) & 0xFF])
+            success = await self.send_command(cmd)
+            if not success:
+                return None
+
+            try:
+                await asyncio.wait_for(self._version_event.wait(), timeout=8.0)
+                return self._version_result
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                self._version_event = None
+                self._version_result = None
+
+    async def _query_all_versions(self) -> None:
+        """Query firmware versions for all known sub-devices."""
+        for addr in list(self.subdevices.keys()):
+            if not self.connected:
+                break
+            ver = await self.async_query_version(addr)
+            if ver:
+                self.subdevices[addr]["version"] = ver
+                self._update_subdevice_version_registry(addr, ver)
+            await asyncio.sleep(0.5)
+
+    def _update_subdevice_version_registry(self, address: int, version: tuple[int, int]) -> None:
+        """Update device registry sw_version for a sub-device."""
+        dr_registry = dr.async_get(self.hass)
+        device_id = (DOMAIN, f"{self.mac_address}_{address:04X}")
+        device = dr_registry.async_get_device(identifiers={device_id})
+        if device:
+            dr_registry.async_update_device(device.id, sw_version=f"v{version[0]}.{version[1]}")
 
     async def __aenter__(self) -> BLEHomeController:
         """Async context manager enter."""
