@@ -1,16 +1,9 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "设置 BLEHome",
-        "description": "选择您希望添加设备的方式。",
-        "data": {
-          "setup_method": "配置方式"
-        }
-      },
       "scan": {
         "title": "正在扫描设备",
-        "description": "发现了 {count} 个设备。请选择您的 BLEHome 网关。",
+        "description": "发现了 {count} 个 WCH 设备。未配网设备将被自动识别并进入配置流程。",
         "data": {
           "device": "选择设备"
         }
@@ -35,6 +28,14 @@
       "bluetooth_confirm": {
         "title": "确认设备",
         "description": "您确定要添加 {name} ({address}) 吗？"
+      },
+      "provision_configure": {
+        "title": "配置配网参数",
+        "description": "为设备 {device} 配置网络密钥和节点地址。",
+        "data": {
+          "node_address": "节点地址（如 100 或 0x64）",
+          "net_key": "网络密钥（32位十六进制）"
+        }
       }
     },
     "error": {
@@ -42,18 +43,27 @@
       "scan_failed": "扫描蓝牙设备失败。",
       "service_scan_failed": "无法从设备获取服务信息。",
       "invalid_mac": "提供的 MAC 地址无效。",
-      "no_services_found": "在该设备上未发现合适的服务。"
+      "no_services_found": "在该设备上未发现合适的服务。",
+      "invalid_key_length": "网络密钥必须是 32 个十六进制字符（16 字节）。",
+      "invalid_key_hex": "网络密钥包含无效的十六进制字符。",
+      "invalid_address": "节点地址必须在 1 到 32767（0x7FFF）之间。",
+      "invalid_name": "节点名称不能为空。"
     },
     "abort": {
-      "already_configured": "该设备已经配置过了。"
+      "already_configured": "该设备已经配置过了。",
+      "provisioned_device": "设备（{address}）已配网。请使用配置流程中的 \"scan\" 选项来添加它。",
+      "no_device": "未选择设备。",
+      "provision_success": "设备已成功配网，地址为 {address}。设备将重启为 Mesh 节点，请在 BLE 扫描中重新发现它。\n\n请重新扫描以添加为已配网设备。",
+      "provision_failed": "配网失败：{error}"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "BLEHome 选项",
-        "description": "当前已配置 {count} 个子设备。选择要移除的设备。",
+        "description": "已配置 {count} 个子设备。",
         "data": {
+          "firmware_choice": "固件文件",
           "remove_subdevices": "移除子设备"
         }
       }
@@ -79,12 +89,17 @@
       "bthome_mock": {
         "name": "BTHome 模拟调试"
       }
+    },
+    "button": {
+      "ota_update": {
+        "name": "OTA 升级"
+      }
     }
   },
   "services": {
     "remove_subdevice": {
       "name": "移除子设备",
-      "description": "从网关移除一个 Mesh 子设备并清理其注册表条目。"
+      "description": "从网关移除一个 Mesh 子设备并清理其注册表条目。同时通过 Mesh 网络向设备发送解除配网命令，使其从 Mesh 网络中移除。"
     }
   }
 }

@@ -30,6 +30,7 @@ _SERVICES_REGISTERED_KEY = "_services_registered"
 SERVICE_DEBUG_STATUS = "debug_status"
 SERVICE_DEBUG_INJECT = "debug_inject_bthome"
 SERVICE_REMOVE_SUBDEVICE = "remove_subdevice"
+SERVICE_OTA_UPDATE = "ota_update"
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BLEHome from a config entry."""
@@ -169,6 +170,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     )
                     continue
 
+                # Try to unprovision the device via mesh first
+                _LOGGER.info("Sending delete command to 0x%04X...", mesh_address)
+                await controller.async_delete_node(mesh_address)
+
                 entry = controller.config_entry
                 new_options = dict(entry.options)
                 subdevices_config = new_options.get(CONF_SUBDEVICES, {}).copy()
@@ -188,6 +193,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 vol.Optional("entry_id"): str,
                 vol.Optional("mac"): str,
                 vol.Required("mesh_address"): vol.Coerce(int),
+            }),
+        )
+
+        async def _handle_ota_update(call) -> None:
+            """Perform OTA firmware update on a mesh node."""
+            entry_id = call.data.get("entry_id")
+            mac = call.data.get("mac")
+            node_address = call.data.get("node_address")
+            firmware_path = call.data.get("firmware_path")
+
+            controllers = [
+                c for k, c in hass.data[DOMAIN].items()
+                if k != _SERVICES_REGISTERED_KEY
+            ]
+            if entry_id:
+                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
+            elif mac:
+                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+
+            for controller in controllers:
+                if not controller:
+                    continue
+                result = await controller.async_ota_update_node(node_address, firmware_path)
+                _LOGGER.info("OTA result for 0x%04X: %s - %s",
+                             node_address, result["success"], result["message"])
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_OTA_UPDATE,
+            _handle_ota_update,
+            schema=vol.Schema({
+                vol.Optional("entry_id"): str,
+                vol.Optional("mac"): str,
+                vol.Required("node_address"): vol.Coerce(int),
+                vol.Required("firmware_path"): str,
             }),
         )
 
@@ -237,6 +277,10 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
         er_registry = er.async_get(hass)
         dr_registry = dr.async_get(hass)
         for addr in removed:
+            # Try to unprovision the device via mesh
+            _LOGGER.info("Sending delete command to removed sub-device 0x%04X...", addr)
+            await controller.async_delete_node(addr)
+
             unique_id = f"{controller.mac_address}_{addr}"
             entity_id = er_registry.async_get_entity_id(Platform.LIGHT, DOMAIN, unique_id)
             if entity_id:

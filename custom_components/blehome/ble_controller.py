@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Optional, Callable
 
 from bleak import BleakClient, BleakError, BLEDevice, AdvertisementData
@@ -39,9 +40,82 @@ from .const import (
     QUERY_CMD,
     BTHOME_PROXY_CMD,
     CONF_CHAR_UUID,
+    CMD_DELETE_NODE,
+    CMD_DELETE_NODE_ACK,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _parse_hex_file(filepath: str) -> Optional[tuple[bytes, int]]:
+    """Parse an Intel HEX file into contiguous bytes.
+
+    Returns (data_bytes, min_address) or None on error.
+    Handles record types 0x00, 0x01, 0x02, 0x04.
+    """
+    elements: list[tuple[int, bytes]] = []
+    upper_addr = 0
+    seg_base = 0
+    address_mode = 0  # 0=16bit, 2=segment, 4=linear
+    min_addr: Optional[int] = None
+    max_addr = 0
+
+    try:
+        with open(filepath, 'r') as f:
+            lines = f.readlines()
+    except (IOError, OSError) as e:
+        _LOGGER.error("Cannot read HEX file %s: %s", filepath, e)
+        return None
+
+    for line in lines:
+        line = line.strip()
+        if not line or not line.startswith(':'):
+            continue
+
+        byte_count = int(line[1:3], 16)
+        address = int(line[3:7], 16)
+        record_type = int(line[7:9], 16)
+        data_str = line[9:9 + byte_count * 2]
+
+        if record_type == 0x00:  # Data
+            data = bytes.fromhex(data_str)
+            if len(data) != byte_count:
+                continue
+            if address_mode == 0x04:
+                full_addr = (upper_addr << 16) | address
+            elif address_mode == 0x02:
+                full_addr = (seg_base << 4) + address
+            else:
+                full_addr = address
+            if min_addr is None or full_addr < min_addr:
+                min_addr = full_addr
+            if full_addr + len(data) > max_addr:
+                max_addr = full_addr + len(data)
+            elements.append((full_addr, data))
+
+        elif record_type == 0x01:  # EOF
+            break
+        elif record_type == 0x02:  # Segment
+            if byte_count == 2:
+                seg_base = int(data_str, 16)
+                address_mode = 0x02
+        elif record_type == 0x04:  # Linear
+            if byte_count == 2:
+                upper_addr = int(data_str, 16)
+                address_mode = 0x04
+        # 0x03, 0x05 ignored
+
+    if not elements or min_addr is None:
+        _LOGGER.error("No data records found in HEX file")
+        return None
+
+    buffer_size = max_addr - min_addr
+    buffer = bytearray(buffer_size)
+    for addr, data in elements:
+        offset = addr - min_addr
+        buffer[offset:offset + len(data)] = data
+
+    return bytes(buffer), min_addr
 
 class BLEHomeScanner(BaseScanner):
     """Bluetooth scanner for BLEHome Proxy."""
@@ -227,6 +301,14 @@ class BLEHomeController:
         self._mock_packet_id = 0
         self._logged_bt_manager_methods = False
         self.bthome_mock_enabled = False
+        # Generic command/ACK mechanism for provisioning, OTA, version queries
+        self._cmd_lock = asyncio.Lock()
+        self._cmd_event: Optional[asyncio.Event] = None
+        self._cmd_ack_byte: Optional[int] = None
+        self._cmd_ack_data: Optional[bytes] = None
+        # Debug: track last notification for timeout diagnostics
+        self._last_notification: Optional[bytes] = None
+        # Legacy version query (refactored to use generic mechanism, keep event for notification handler compat)
         self._version_event: Optional[asyncio.Event] = None
         self._version_result: Optional[tuple[int, int]] = None
         self._version_lock = asyncio.Lock()
@@ -429,12 +511,32 @@ class BLEHomeController:
 
     def _notification_handler(self, sender: int, data: bytearray) -> None:
         """Handle notification data."""
+        # Track last notification for timeout diagnostics
+        self._last_notification = bytes(data)
+
         # Handle CMD_GET_VERSION_ACK (0x8B): [cmd, addrL, addrH, ver_major, ver_minor, status]
         if len(data) == 6 and data[0] == 0x8B and data[5] == 0x00:
             if self._version_event and not self._version_event.is_set():
                 self._version_result = (data[3], data[4])
                 self._version_event.set()
+                return
+
+        # Generic ACK matching for provisioning, OTA, etc.
+        if (self._cmd_event is not None
+                and not self._cmd_event.is_set()
+                and self._cmd_ack_byte is not None
+                and len(data) >= 1
+                and data[0] == self._cmd_ack_byte):
+            self._cmd_ack_data = bytes(data)
+            self._cmd_event.set()
             return
+
+        # Debug: log unmatched OTA-related ACKs that might indicate a routing issue
+        if len(data) >= 1 and data[0] in (0x87, 0x88, 0x86):
+            _LOGGER.debug("Unmatched OTA ACK: data[0]=0x%02X len=%d cmd_event=%s cmd_ack=0x%02X",
+                          data[0], len(data),
+                                          "set" if self._cmd_event and self._cmd_event.is_set() else "none" if self._cmd_event is None else "waiting",
+                          self._cmd_ack_byte if self._cmd_ack_byte else 0)
 
         if len(data) < 7 or data[0] != HEADER:
             return
@@ -882,29 +984,57 @@ class BLEHomeController:
             )
         return success
 
+    async def _send_and_wait(self, cmd_bytes: bytes, ack_byte: int, timeout: float = 30.0) -> Optional[bytes]:
+        """Send command bytes and wait for a matching ACK byte.
+
+        Uses _cmd_lock to serialize command/ACK exchanges.
+        Returns raw ACK bytes on success, None on timeout or send failure.
+        """
+        async with self._cmd_lock:
+            self._cmd_event = asyncio.Event()
+            self._cmd_ack_byte = ack_byte
+            self._cmd_ack_data = None
+
+            success = await self.send_command(cmd_bytes)
+            if not success:
+                self._cmd_event = None
+                self._cmd_ack_byte = None
+                return None
+
+            try:
+                await asyncio.wait_for(self._cmd_event.wait(), timeout=timeout)
+                return self._cmd_ack_data
+            except asyncio.TimeoutError:
+                return None
+            finally:
+                self._cmd_event = None
+                self._cmd_ack_byte = None
+                self._cmd_ack_data = None
+
     async def async_query_version(self, address: int) -> Optional[tuple[int, int]]:
         """Query firmware version from a mesh sub-device.
 
         Returns (major, minor) or None if device doesn't respond (old firmware).
-        Serialized via _version_lock to prevent cross-talk between concurrent callers.
         """
-        async with self._version_lock:
-            self._version_event = asyncio.Event()
-            self._version_result = None
+        cmd = bytes([0xAB, address & 0xFF, (address >> 8) & 0xFF])
+        ack = await self._send_and_wait(cmd, 0x8B, timeout=8.0)
+        if ack is None or len(ack) < 5:
+            return None
+        return (ack[3], ack[4])
 
-            cmd = bytes([0xAB, address & 0xFF, (address >> 8) & 0xFF])
-            success = await self.send_command(cmd)
-            if not success:
-                return None
+    async def async_delete_node(self, address: int) -> bool:
+        """Delete/unprovision a mesh sub-device through the gateway.
 
-            try:
-                await asyncio.wait_for(self._version_event.wait(), timeout=8.0)
-                return self._version_result
-            except asyncio.TimeoutError:
-                return None
-            finally:
-                self._version_event = None
-                self._version_result = None
+        Sends CMD_DELETE_NODE (0xA2) and waits for ACK (0x82).
+        Returns True if the device acknowledged, False on timeout/disconnect.
+        """
+        cmd = bytes([CMD_DELETE_NODE, address & 0xFF, (address >> 8) & 0xFF])
+        ack = await self._send_and_wait(cmd, CMD_DELETE_NODE_ACK, timeout=8.0)
+        if ack is None:
+            _LOGGER.warning("Delete node 0x%04X: no ACK (device may be offline)", address)
+            return False
+        _LOGGER.info("Delete node 0x%04X: acknowledged", address)
+        return True
 
     async def _query_all_versions(self) -> None:
         """Query firmware versions for all known sub-devices."""
@@ -927,6 +1057,409 @@ class BLEHomeController:
         if device:
             sw_ver = f"v{version[0]}.{version[1]}" if version else None
             dr_registry.async_update_device(device.id, sw_version=sw_ver)
+
+    # --- Provisioning ---
+
+    async def async_get_network_info(self) -> Optional[dict[str, Any]]:
+        """Get IV index and flag from the gateway.
+
+        Sends CMD_PROVISION_INFO (0xA0) with control_code=0 (get).
+        ACK: [0x80, status, iv(4), flag] = 7 bytes
+        Returns dict with 'iv_index' and 'flag', or None on failure.
+        """
+        cmd = bytes([0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        ack = await self._send_and_wait(cmd, 0x80, timeout=10.0)
+        if ack is None or len(ack) < 7:
+            return None
+        # ack[1] = status, ack[2..5] = iv (LE), ack[6] = flag
+        if ack[1] != 0:
+            return None
+        iv_index = ack[2] | (ack[3] << 8) | (ack[4] << 16) | (ack[5] << 24)
+        return {"iv_index": iv_index, "flag": ack[6]}
+
+    async def async_set_network_info(self, iv_index: int, flag: int) -> bool:
+        """Set IV index and flag on an unprovisioned device.
+
+        Sends CMD_PROVISION_INFO (0xA0) with control_code=1 (write).
+        ACK: [0x80, status] = 2 bytes minimum
+        Returns True if successful.
+        """
+        cmd = bytes([
+            0xA0, 0x01,
+            iv_index & 0xFF, (iv_index >> 8) & 0xFF,
+            (iv_index >> 16) & 0xFF, (iv_index >> 24) & 0xFF,
+            flag & 0xFF,
+        ])
+        ack = await self._send_and_wait(cmd, 0x80, timeout=10.0)
+        if ack is None or len(ack) < 2:
+            _LOGGER.error("Set network info: no ACK or too short")
+            return False
+        if ack[1] != 0:
+            _LOGGER.error("Set network info failed, status=%d", ack[1])
+            return False
+        _LOGGER.info("Network info set: iv_index=%d, flag=%d", iv_index, flag)
+        return True
+
+    # --- OTA Update ---
+
+    @staticmethod
+    def _parse_ota_firmware(filepath: str) -> Optional[tuple[bytes, int]]:
+        """Parse .bin or .hex firmware file.
+
+        Returns (firmware_bytes, start_address) or None on error.
+        For .bin: start_address = 0x1000
+        For .hex: start_address = minimum address in file
+        """
+        try:
+            name = os.path.basename(filepath).lower()
+            if name.endswith('.bin'):
+                with open(filepath, 'rb') as f:
+                    data = f.read()
+                return data, 0x1000
+            elif name.endswith('.hex'):
+                return _parse_hex_file(filepath)
+            else:
+                _LOGGER.error("Unsupported firmware file: %s (use .bin or .hex)", filepath)
+                return None
+        except (IOError, OSError, ValueError) as e:
+            _LOGGER.error("Failed to parse firmware file %s: %s", filepath, e)
+            return None
+
+    async def async_ota_query_image_info(self, node_address: int) -> Optional[dict[str, Any]]:
+        """Query OTA image info from a node.
+
+        Sends CMD_IMAGE_INFO (0xA6) + address.
+        ACK: [0x86, addrL, addrH, imageSize(4), blockSize(2), chipType(2), status] = 12 bytes
+        Returns dict with 'image_size', 'block_size', 'chip_type', 'status_code', or None.
+        """
+        cmd = bytes([0xA6, node_address & 0xFF, (node_address >> 8) & 0xFF])
+        ack = await self._send_and_wait(cmd, 0x86, timeout=15.0)
+        if ack is None or len(ack) < 12:
+            return None
+        if ack[11] != 0:
+            _LOGGER.error("Image info query failed, status=%d", ack[11])
+            return None
+        image_size = ack[3] | (ack[4] << 8) | (ack[5] << 16) | (ack[6] << 24)
+        block_size = ack[7] | (ack[8] << 8)
+        chip_type = (ack[9] << 8) | ack[10]  # big-endian from ACK
+        return {
+            "image_size": image_size,
+            "block_size": block_size,
+            "chip_type": chip_type,
+            "status_code": ack[11],
+        }
+
+    async def _download_firmware(self, url: str) -> Optional[str]:
+        """Download firmware from HTTP/HTTPS URL to a temporary file.
+
+        Returns the temp file path, or None on failure.
+        """
+        import aiohttp
+        import tempfile
+
+        _LOGGER.info("OTA: downloading firmware from %s", url)
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status != 200:
+                        _LOGGER.error("OTA: HTTP %d downloading %s", resp.status, url)
+                        return None
+                    data = await resp.read()
+                    # Preserve extension for parsing (e.g. .bin, .hex)
+                    ext = ".bin"
+                    for known_ext in (".bin", ".hex"):
+                        if url.lower().endswith(known_ext):
+                            ext = known_ext
+                            break
+                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
+                    tmp.write(data)
+                    tmp_path = tmp.name
+                    tmp.close()
+                    _LOGGER.info("OTA: downloaded %d bytes to %s", len(data), tmp_path)
+                    return tmp_path
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+            _LOGGER.error("OTA: failed to download firmware: %s", e)
+            return None
+
+    async def async_ota_update_node(self, node_address: int, firmware_path: str) -> dict[str, Any]:
+        """Perform a full OTA firmware update on a mesh node.
+
+        Returns dict with 'success' (bool) and 'message' (str).
+        Progress is reported via HA events and persistent notifications.
+        """
+        result = {"success": False, "message": ""}
+        _notify_id = f"blehome_ota_{node_address:04X}"
+
+        await self._ota_notify(node_address, 0, "准备中...", _notify_id)
+
+        # 0. Download firmware from URL if needed
+        actual_path = firmware_path
+        cleanup_path = None
+        if firmware_path.lower().startswith(("http://", "https://")):
+            downloaded = await self._download_firmware(firmware_path)
+            if downloaded is None:
+                result["message"] = f"Failed to download firmware from URL: {firmware_path}"
+                await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+                return result
+            actual_path = downloaded
+            cleanup_path = downloaded
+        elif not firmware_path.startswith("/"):
+            # Resolve relative to HA config directory, or use absolute path as-is
+            config_dir = self.hass.config.path()
+            full_path = os.path.join(config_dir, firmware_path)
+            if os.path.isfile(full_path):
+                actual_path = full_path
+            elif os.path.isfile(firmware_path):
+                actual_path = firmware_path
+
+        try:
+            return await self._do_ota_update(node_address, actual_path, result, _notify_id)
+        finally:
+            if cleanup_path:
+                try:
+                    os.unlink(cleanup_path)
+                except OSError:
+                    pass
+
+    async def _ota_notify(
+        self, node_address: int, progress: int, message: str, notify_id: str = ""
+    ) -> None:
+        """Create or update a persistent notification for OTA progress."""
+        if not notify_id:
+            notify_id = f"blehome_ota_{node_address:04X}"
+        title = f"BLEHome OTA — 0x{node_address:04X}"
+        body = f"OTA 升级: {progress}%\n{message}"
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": title, "message": body, "notification_id": notify_id},
+                blocking=False,
+            )
+        except Exception:
+            _LOGGER.warning("Failed to create OTA notification", exc_info=True)
+
+    async def _do_ota_update(
+        self, node_address: int, firmware_path: str, result: dict, _notify_id: str = ""
+    ) -> dict:
+        """Internal OTA logic, separated for temp file cleanup."""
+        import time as _time
+        _t_start = _time.monotonic()
+
+        # 1. Parse firmware file (run in executor to avoid blocking event loop)
+        parsed = await asyncio.to_thread(self._parse_ota_firmware, firmware_path)
+        if parsed is None:
+            result["message"] = f"Cannot parse firmware file: {firmware_path}"
+            await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+            return result
+        firmware_data, start_addr = parsed
+        fw_name = os.path.basename(firmware_path)
+        # Extract version from filename (e.g. "TLED_V3.3.hex" → "V3.3")
+        fw_version = ""
+        import re as _re
+        _m = _re.search(r'_?(v?\d+[._]\d+)', fw_name, _re.I)
+        if _m:
+            fw_version = _m.group(1)
+        total = len(firmware_data)
+        _LOGGER.info("OTA: firmware size=%d bytes, start_addr=0x%04X, version=%s", total, start_addr, fw_version or "?")
+        await self._ota_notify(node_address, 0,
+            f"固件: {fw_name}\n版本: {fw_version or '?'}\n大小: {total} 字节\n状态: 解析完成", _notify_id)
+
+        # 2. Query current image info
+        image_info = await self.async_ota_query_image_info(node_address)
+        if image_info is None:
+            result["message"] = "Failed to query image info (no response or error)"
+            await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+            return result
+        _LOGGER.info("OTA: image_size=%d, block_size=%d, chip_type=0x%04X",
+                     image_info["image_size"], image_info["block_size"], image_info["chip_type"])
+
+        if image_info["image_size"] < total:
+            result["message"] = (
+                f"Firmware file too large ({total} bytes) "
+                f"> image capacity ({image_info['image_size']} bytes)"
+            )
+            await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+            return result
+
+        chip_name = f"0x{image_info['chip_type']:04X}"
+        await self._ota_notify(node_address, 0,
+            f"固件: {fw_name}\n版本: {fw_version or '?'}\n大小: {total} 字节\n"
+            f"芯片: {chip_name}  容量: {image_info['image_size']} 字节\n"
+            f"状态: 设备就绪，开始写入...", _notify_id)
+
+        # 3. Determine packet parameters based on BLE MTU
+        ADDRESS_BASE = 8
+        FRAME_HEAD = 5
+
+        # On BlueZ, client.mtu_size often returns 23 (default) even on modern
+        # adapters because MTU negotiation happens during the HA-managed connection,
+        # not on our BleakClient instance.  The original hardcoded value of 216
+        # data bytes (MTU=247 equivalent) worked correctly — revert to that.
+        mtu = 247
+        _LOGGER.info("OTA: using MTU = %d", mtu)
+
+        # Calculate max frame size: cap at 221, align data to 8-byte boundary
+        frame_max = min(221, mtu - 3)
+        align = (frame_max - FRAME_HEAD) // ADDRESS_BASE
+        frame_max_len = align * ADDRESS_BASE + FRAME_HEAD
+        max_data_len = frame_max_len - FRAME_HEAD
+        if max_data_len < 8:
+            max_data_len = 8
+        total_chunks = (total + max_data_len - 1) // max_data_len
+        _LOGGER.info("OTA: frame_max_len=%d, max_data_len=%d, total_chunks=%d (MTU %d)",
+                     frame_max_len, max_data_len, total_chunks, mtu)
+
+        # 4. Send UPDATE chunks
+        offset = 0
+        progress_pct = 0
+        chunk_index = 0
+        _t_phase = _time.monotonic()
+        while offset < total:
+            if not self.connected:
+                result["message"] = f"Connection lost at offset {offset}/{total}"
+                await self._ota_notify(node_address, progress_pct, f"失败: 连接断开\n已写入: {offset}/{total} 字节", _notify_id)
+                return result
+
+            data_len = min(max_data_len, total - offset)
+            flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+
+            # Build UPDATE command: [0xA7, addrL, addrH, flashL, flashH, data...]
+            cmd = bytearray()
+            cmd.append(0xA7)
+            cmd.append(node_address & 0xFF)
+            cmd.append((node_address >> 8) & 0xFF)
+            cmd.append(flash_addr & 0xFF)
+            cmd.append((flash_addr >> 8) & 0xFF)
+            cmd.extend(firmware_data[offset:offset + data_len])
+
+            ack = await self._send_and_wait(bytes(cmd), 0x87, timeout=15.0)
+            if ack is None:
+                last = self._last_notification.hex() if self._last_notification else "none"
+                result["message"] = f"OTA UPDATE timeout at offset {offset}/{total} (last_notify={last})"
+                await self._ota_notify(node_address, progress_pct,
+                    f"失败: 写入超时\n已写入: {offset}/{total} 字节\n"
+                    f"块: {chunk_index}/{total_chunks}", _notify_id)
+                return result
+            if len(ack) < 6 or ack[5] != 0:
+                result["message"] = f"OTA UPDATE fail at offset {offset}/{total}, status={ack[5] if len(ack) >= 6 else 'N/A'}"
+                await self._ota_notify(node_address, progress_pct,
+                    f"失败: 写入错误 (status={ack[5] if len(ack) >= 6 else 'N/A'})\n"
+                    f"已写入: {offset}/{total} 字节", _notify_id)
+                return result
+
+            offset += data_len
+            chunk_index += 1
+            progress_pct = int(offset * 100 / total)
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_ota_progress",
+                {"node_address": node_address, "progress": progress_pct,
+                 "offset": offset, "total": total, "phase": "update"}
+            )
+            # Update notification every 5% or every 50 chunks (whichever is more frequent)
+            if progress_pct % 5 == 0 or offset == total or chunk_index % 50 == 0:
+                _elapsed = _time.monotonic() - _t_start
+                _speed = offset / _elapsed / 1024 if _elapsed > 0 else 0
+                await self._ota_notify(node_address, progress_pct,
+                    f"阶段: 写入中 ({chunk_index}/{total_chunks} 块)\n"
+                    f"固件: {fw_name}\n"
+                    f"进度: {offset}/{total} 字节\n"
+                    f"速度: {_speed:.1f} KB/s\n"
+                    f"耗时: {_elapsed:.0f} 秒", _notify_id)
+            _LOGGER.debug("OTA update: %d/%d (%d%%) chunk %d/%d",
+                          offset, total, progress_pct, chunk_index, total_chunks)
+
+        _t_phase = _time.monotonic() - _t_phase
+        _LOGGER.info("OTA: UPDATE phase complete in %.1fs", _t_phase)
+        await self._ota_notify(node_address, 100,
+            f"写入完成 ({total} 字节, {_t_phase:.0f} 秒)\n"
+            f"固件: {fw_name}\n"
+            f"阶段: 验证中...", _notify_id)
+
+        # 5. Send VERIFY chunks
+        _LOGGER.info("OTA: VERIFY phase")
+        _t_phase = _time.monotonic()
+        offset = 0
+        chunk_index = 0
+        verify_ok = True
+        while offset < total and verify_ok:
+            if not self.connected:
+                _LOGGER.warning("OTA: disconnected during verify, skipping remaining")
+                verify_ok = False
+                break
+
+            data_len = min(max_data_len, total - offset)
+            flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+
+            cmd = bytearray()
+            cmd.append(0xA8)
+            cmd.append(node_address & 0xFF)
+            cmd.append((node_address >> 8) & 0xFF)
+            cmd.append(flash_addr & 0xFF)
+            cmd.append((flash_addr >> 8) & 0xFF)
+            cmd.extend(firmware_data[offset:offset + data_len])
+
+            ack = await self._send_and_wait(bytes(cmd), 0x88, timeout=30.0)
+            if ack is None:
+                last = self._last_notification.hex() if self._last_notification else "none"
+                _LOGGER.warning(
+                    "OTA: VERIFY timeout at offset %d (last_notify=%s), skipping remaining",
+                    offset, last
+                )
+                verify_ok = False
+                break
+            if len(ack) < 6 or ack[5] != 0:
+                status = ack[5] if len(ack) >= 6 else "N/A"
+                _LOGGER.warning("OTA: VERIFY failed at offset %d, status=%s, skipping", offset, status)
+                verify_ok = False
+                break
+
+            offset += data_len
+            chunk_index += 1
+            progress_pct = int(offset * 100 / total)
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_ota_progress",
+                {"node_address": node_address, "progress": progress_pct,
+                 "offset": offset, "total": total, "phase": "verify"}
+            )
+            if progress_pct % 10 == 0 or offset == total:
+                _elapsed = _time.monotonic() - _t_start
+                await self._ota_notify(node_address, 100,
+                    f"阶段: 验证中 ({chunk_index}/{total_chunks} 块)\n"
+                    f"固件: {fw_name}\n"
+                    f"进度: {offset}/{total} 字节\n"
+                    f"总耗时: {_elapsed:.0f} 秒", _notify_id)
+            _LOGGER.debug("OTA verify: %d/%d (%d%%)", offset, total, progress_pct)
+
+        _t_verify = _time.monotonic() - _t_phase
+        if verify_ok:
+            _LOGGER.info("OTA: VERIFY phase complete in %.1fs", _t_verify)
+        else:
+            _LOGGER.warning("OTA: VERIFY skipped/partial — UPDATE chunks already confirmed per-chunk, proceeding to END")
+
+        # 6. Send END command (desktop app uses 1.0s delay)
+        await asyncio.sleep(1.0)
+        end_cmd = bytes([0xA9, node_address & 0xFF, (node_address >> 8) & 0xFF])
+        await self.send_command(end_cmd)
+
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_ota_progress",
+            {"node_address": node_address, "progress": 100,
+             "offset": total, "total": total, "phase": "complete"}
+        )
+
+        _t_total = _time.monotonic() - _t_start
+        result["success"] = True
+        result["message"] = f"OTA update complete ({total} bytes in {_t_total:.0f}s)"
+        await self._ota_notify(node_address, 100,
+            f"OTA 升级成功!\n"
+            f"固件: {fw_name}\n"
+            f"版本: {fw_version or '?'}\n"
+            f"大小: {total} 字节\n"
+            f"耗时: {_t_total:.0f} 秒\n"
+            f"速度: {total/_t_total/1024:.1f} KB/s", _notify_id)
+        _LOGGER.info("OTA: update complete for 0x%04X in %.1fs", node_address, _t_total)
+
+        return result
 
     async def __aenter__(self) -> BLEHomeController:
         """Async context manager enter."""

@@ -68,6 +68,28 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 - **开源协议**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - **官方邮箱**: [admin@blehome.org](mailto:admin@blehome.org)
 
+## 更新日志
+
+### v1.6.0
+- **网关转发 OTA 升级**: 支持通过网关对 Mesh 子设备进行固件 OTA 升级，包含进度通知和 `.bin/.hex` 固件文件选择器。
+- **子设备解除配网**: `remove_subdevice` 服务现在会在清理配置前向 Mesh 发送解除配网命令 (0xA2)，确保 Mesh 网络的正确管理。
+- **设备版本显示**: 子设备固件版本号现在会显示在 Home Assistant 的设备信息面板中。
+- **配置流程优化**: 移除了网关选项中的冗余配网参数，仅保留固件选择。
+- **OTA 诊断增强**: 增强了 OTA 操作的日志记录和超时诊断，包括逐块 ACK 追踪和最后通知捕获。
+- **蓝牙代理注册**: 网关自动注册为 Home Assistant 的蓝牙代理，实现 BTHome 传感器距离扩展。
+- **性能与稳定性**:
+  - 基于 BLE MTU 的自适应 OTA 帧大小
+  - 非阻塞固件文件解析 (`asyncio.to_thread`)
+  - VERIFY 阶段尽力执行 + 优雅回退
+  - 指数退避的持久化重连机制
+
+### v1.5.0
+- 初始 BLEHome 集成版本发布
+- 通过蓝牙发现 Mesh 网关
+- Mesh 子设备灯光控制（开关、亮度）
+- BTHome 代理广播注入
+- 直连设备 OTA 固件升级
+
 ## 鸣谢
 
 BLEHome 本地控制标准的一部分。

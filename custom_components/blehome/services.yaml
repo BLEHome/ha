@@ -58,7 +58,9 @@ remove_subdevice:
   name: Remove sub-device
   description: >
     Remove a mesh sub-device from the gateway and clean up its registries.
-    The sub-device's device and entities will be permanently deleted.
+    Also sends an unprovision command to the device over the mesh network,
+    removing it from the mesh. The sub-device's device and entities will
+    be permanently deleted.
   fields:
     entry_id:
       name: Entry ID
@@ -83,3 +85,43 @@ remove_subdevice:
           min: 1
           max: 65535
           mode: box
+
+ota_update:
+  name: OTA update
+  description: >
+    Perform a firmware OTA update on a mesh node. The firmware file (.bin or .hex)
+    must be accessible from the Home Assistant server.
+    Progress is reported via blehome_ota_progress events.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Config entry ID of the gateway (optional if mac is provided).
+      required: false
+      example: "1234567890abcdef"
+      selector:
+        text:
+    mac:
+      name: Gateway MAC
+      description: MAC address of the gateway (optional if entry_id is provided).
+      required: false
+      example: "70:19:88:C9:27:89"
+      selector:
+        text:
+    node_address:
+      name: Node address
+      description: Mesh address of the node to update.
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box
+    firmware_path:
+      name: Firmware path
+      description: >
+        Path or URL to the .bin/.hex firmware file. Supports absolute paths,
+        paths relative to the HA config directory (e.g. "www/firmware.bin"),
+        and HTTP/HTTPS URLs (e.g. "http://homeassistant.local:8123/local/firmware.bin").
+      required: true
+      selector:
+        text:

@@ -1,16 +1,9 @@
 {
   "config": {
     "step": {
-      "user": {
-        "title": "Setup BLEHome",
-        "description": "Choose how you want to add your device.",
-        "data": {
-          "setup_method": "Setup Method"
-        }
-      },
       "scan": {
         "title": "Scanning for Devices",
-        "description": "Found {count} devices. Please select your BLEHome gateway.",
+        "description": "Found {count} WCH device(s). Unprovisioned devices will be automatically recognized and configured.",
         "data": {
           "device": "Select Device"
         }
@@ -35,6 +28,14 @@
       "bluetooth_confirm": {
         "title": "Confirm Device",
         "description": "Do you want to add {name} ({address})?"
+      },
+      "provision_configure": {
+        "title": "Configure Provisioning",
+        "description": "Configure network key and node address for device {device}.",
+        "data": {
+          "node_address": "Node Address (e.g. 100 or 0x64)",
+          "net_key": "Network Key (32 hex chars / 16 bytes)"
+        }
       }
     },
     "error": {
@@ -42,18 +43,27 @@
       "scan_failed": "Failed to scan for Bluetooth devices.",
       "service_scan_failed": "Failed to retrieve services from the device.",
       "invalid_mac": "The MAC address provided is invalid.",
-      "no_services_found": "No suitable services found on this device."
+      "no_services_found": "No suitable services found on this device.",
+      "invalid_key_length": "Network key must be exactly 32 hex characters (16 bytes).",
+      "invalid_key_hex": "Network key contains invalid hex characters.",
+      "invalid_address": "Node address must be between 1 and 32767 (0x7FFF).",
+      "invalid_name": "Node name cannot be empty."
     },
     "abort": {
-      "already_configured": "This device is already configured."
+      "already_configured": "This device is already configured.",
+      "provisioned_device": "This device ({address}) is already provisioned. Use the \"scan\" option in the integration setup to add it.",
+      "no_device": "No device selected.",
+      "provision_success": "Successfully provisioned device at address {address}. The device will now restart as a mesh node and should appear in BLE scans as a configured device.\n\nPlease scan again to add it.",
+      "provision_failed": "Provisioning failed: {error}"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "BLEHome Options",
-        "description": "You have {count} sub-device(s) configured. Select the ones to remove.",
+        "description": "Configure {count} sub-device(s).",
         "data": {
+          "firmware_choice": "Firmware file",
           "remove_subdevices": "Remove sub-devices"
         }
       }
@@ -79,12 +89,17 @@
       "bthome_mock": {
         "name": "BTHome Mock Injection"
       }
+    },
+    "button": {
+      "ota_update": {
+        "name": "OTA Update"
+      }
     }
   },
   "services": {
     "remove_subdevice": {
       "name": "Remove sub-device",
-      "description": "Remove a mesh sub-device from the gateway and clean up its registries."
+      "description": "Remove a mesh sub-device from the gateway and clean up its registries. Sends an unprovision command to the device over the mesh network."
     }
   }
 }

@@ -70,6 +70,28 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 - **License**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - **Email**: [admin@blehome.org](mailto:admin@blehome.org)
 
+## Changelog
+
+### v1.6.0
+- **OTA Update via Gateway**: Mesh sub-devices can now be firmware-updated through the gateway via the `ota_update` service. Includes progress notifications, file picker for `.bin/.hex` firmware files.
+- **Sub-device Unprovisioning**: The `remove_subdevice` service now sends an unprovision command (0xA2) to the mesh before cleanup, ensuring proper mesh network hygiene.
+- **Device Version Display**: Sub-device firmware version numbers now appear in the Home Assistant device info panel.
+- **Config Flow Cleanup**: Removed redundant provisioning parameters from the gateway options flow. Simplified to firmware selection only.
+- **OTA Diagnostics**: Enhanced logging and timeout diagnostics for OTA operations, including per-chunk ACK tracking and last-notification capture.
+- **Bluetooth Proxy Registration**: The gateway automatically registers as a Bluetooth proxy in Home Assistant, enabling seamless BTHome sensor range extension.
+- **Performance & Stability**:
+  - Adaptive OTA frame sizing based on BLE MTU
+  - Non-blocking firmware file parsing (`asyncio.to_thread`)
+  - Best-effort VERIFY phase with graceful fallback
+  - Persistent reconnection with exponential backoff
+
+### v1.5.0
+- Initial BLEHome integration release
+- Mesh gateway discovery via Bluetooth
+- Light control (on/off, brightness) for mesh sub-devices
+- BTHome proxy advertisement injection
+- OTA firmware update for direct-connected devices
+
 ## Credits
 
 Part of the BLEHome local control standard.
