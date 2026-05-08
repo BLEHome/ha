@@ -1220,15 +1220,27 @@ class BLEHomeController:
                     os.unlink(cleanup_path)
                 except OSError:
                     pass
+            # Re-subscribe to notifications to clear any stale BLE buffer state
+            # accumulated during hundreds of OTA chunks. This improves success
+            # rate for subsequent commands without a full reconnect.
+            _LOGGER.info("OTA complete, re-subscribing to BLE notifications")
+            if self.client and self.client.is_connected:
+                try:
+                    if self.notify_uuid:
+                        await self.client.stop_notify(self.notify_uuid)
+                except Exception:
+                    pass
+                await self._setup_notifications()
 
     async def _ota_notify(
-        self, node_address: int, progress: int, message: str, notify_id: str = ""
+        self, node_address: int, progress: int, message: str,
+        notify_id: str = "", progress_label: str = "OTA 升级"
     ) -> None:
         """Create or update a persistent notification for OTA progress."""
         if not notify_id:
             notify_id = f"blehome_ota_{node_address:04X}"
         title = f"BLEHome OTA — 0x{node_address:04X}"
-        body = f"OTA 升级: {progress}%\n{message}"
+        body = f"{progress_label}: {progress}%\n{message}"
         try:
             await self.hass.services.async_call(
                 "persistent_notification", "create",
@@ -1332,7 +1344,18 @@ class BLEHomeController:
             cmd.append((flash_addr >> 8) & 0xFF)
             cmd.extend(firmware_data[offset:offset + data_len])
 
-            ack = await self._send_and_wait(bytes(cmd), 0x87, timeout=15.0)
+            # Retry up to 5 times for transient failures (timeout or status!=0)
+            ack = None
+            for retry in range(5):
+                ack = await self._send_and_wait(bytes(cmd), 0x87, timeout=120.0)
+                if ack is None:
+                    _LOGGER.warning("OTA UPDATE timeout at offset %d (retry %d/5)", offset, retry + 1)
+                    continue
+                if len(ack) >= 6 and ack[5] == 0:
+                    break  # success
+                # status != 0 — may be corrupted mesh packet, retry
+                _LOGGER.warning("OTA UPDATE retry at offset %d, status=%d (retry %d/5)",
+                                offset, ack[5], retry + 1)
             if ack is None:
                 last = self._last_notification.hex() if self._last_notification else "none"
                 result["message"] = f"OTA UPDATE timeout at offset {offset}/{total} (last_notify={last})"
@@ -1341,10 +1364,15 @@ class BLEHomeController:
                     f"块: {chunk_index}/{total_chunks}", _notify_id)
                 return result
             if len(ack) < 6 or ack[5] != 0:
-                result["message"] = f"OTA UPDATE fail at offset {offset}/{total}, status={ack[5] if len(ack) >= 6 else 'N/A'}"
+                status = ack[5] if len(ack) >= 6 else "N/A"
+                flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+                _LOGGER.error("OTA UPDATE fail at offset %d (flash_addr=0x%04X), status=%s",
+                              offset, flash_addr, status)
+                result["message"] = f"OTA UPDATE fail at offset {offset}/{total}, status={status}"
                 await self._ota_notify(node_address, progress_pct,
-                    f"失败: 写入错误 (status={ack[5] if len(ack) >= 6 else 'N/A'})\n"
-                    f"已写入: {offset}/{total} 字节", _notify_id)
+                    f"失败: 写入错误 (status={status})\n"
+                    f"已写入: {offset}/{total} 字节\n"
+                    f"块: {chunk_index}/{total_chunks}", _notify_id)
                 return result
 
             offset += data_len
@@ -1373,7 +1401,7 @@ class BLEHomeController:
         await self._ota_notify(node_address, 100,
             f"写入完成 ({total} 字节, {_t_phase:.0f} 秒)\n"
             f"固件: {fw_name}\n"
-            f"阶段: 验证中...", _notify_id)
+            f"阶段: 验证中...", _notify_id, progress_label="OTA 验证")
 
         # 5. Send VERIFY chunks
         _LOGGER.info("OTA: VERIFY phase")
@@ -1398,7 +1426,17 @@ class BLEHomeController:
             cmd.append((flash_addr >> 8) & 0xFF)
             cmd.extend(firmware_data[offset:offset + data_len])
 
-            ack = await self._send_and_wait(bytes(cmd), 0x88, timeout=30.0)
+            # Retry up to 5 times for transient failures (timeout or status!=0)
+            ack = None
+            for retry in range(5):
+                ack = await self._send_and_wait(bytes(cmd), 0x88, timeout=120.0)
+                if ack is None:
+                    _LOGGER.warning("OTA VERIFY timeout at offset %d (retry %d/5)", offset, retry + 1)
+                    continue
+                if len(ack) >= 6 and ack[5] == 0:
+                    break
+                _LOGGER.warning("OTA VERIFY retry at offset %d, status=%d (retry %d/5)",
+                                offset, ack[5], retry + 1)
             if ack is None:
                 last = self._last_notification.hex() if self._last_notification else "none"
                 _LOGGER.warning(
@@ -1423,11 +1461,11 @@ class BLEHomeController:
             )
             if progress_pct % 10 == 0 or offset == total:
                 _elapsed = _time.monotonic() - _t_start
-                await self._ota_notify(node_address, 100,
+                await self._ota_notify(node_address, progress_pct,
                     f"阶段: 验证中 ({chunk_index}/{total_chunks} 块)\n"
                     f"固件: {fw_name}\n"
                     f"进度: {offset}/{total} 字节\n"
-                    f"总耗时: {_elapsed:.0f} 秒", _notify_id)
+                    f"总耗时: {_elapsed:.0f} 秒", _notify_id, progress_label="OTA 验证")
             _LOGGER.debug("OTA verify: %d/%d (%d%%)", offset, total, progress_pct)
 
         _t_verify = _time.monotonic() - _t_phase

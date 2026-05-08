@@ -72,6 +72,12 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
+### v1.7.0
+- **OTA Reliability for Distant Devices**: Increased per-chunk timeout to 120s with 5 retries. Retry on both timeout and non-zero status (status=1). Distant mesh devices can now complete OTA reliably.
+- **OTA Verification Progress**: Verification phase now shows actual percentage progress instead of stuck at 100%. Notification label changes to "OTA 验证" during verify.
+- **Stale Buffer Cleanup**: Re-subscribes to BLE notifications after OTA to clear accumulated buffer state, improving success rate for subsequent commands.
+- **Config Flow Refinements**: Removed redundant provisioning parameters, simplified to firmware selection only.
+
 ### v1.6.0
 - **OTA Update via Gateway**: Mesh sub-devices can now be firmware-updated through the gateway via the `ota_update` service. Includes progress notifications, file picker for `.bin/.hex` firmware files.
 - **Sub-device Unprovisioning**: The `remove_subdevice` service now sends an unprovision command (0xA2) to the mesh before cleanup, ensuring proper mesh network hygiene.
