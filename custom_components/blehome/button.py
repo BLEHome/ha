@@ -88,9 +88,10 @@ class BLEHomeOTAButton(ButtonEntity):
             bin_dir = self.controller.hass.config.path("custom_components/blehome/bin")
             found = []
             if os.path.isdir(bin_dir):
-                for f in sorted(os.listdir(bin_dir), reverse=True):
-                    if f.lower().endswith((".bin", ".hex")):
-                        found.append(os.path.join(bin_dir, f))
+                for root, _dirs, filenames in os.walk(bin_dir):
+                    for f in sorted(filenames, reverse=True):
+                        if f.lower().endswith((".bin", ".hex")):
+                            found.append(os.path.join(root, f))
             if found:
                 firmware_path = found[0]
                 _LOGGER.info("Auto-selected firmware: %s", firmware_path)

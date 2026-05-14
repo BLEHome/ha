@@ -44,6 +44,8 @@ async def _provision_device(
         return False, "Network key must be exactly 16 bytes"
 
     try:
+        success = False
+        message = ""
         async with BleakClient(device_address, timeout=15.0) as client:
             if not client.is_connected:
                 return False, "Failed to connect to device"
@@ -142,8 +144,12 @@ async def _provision_device(
                 device_address, node_address,
             )
 
-            # Device will restart as a mesh node after provisioning
-            return True, f"Provisioned at 0x{node_address:04X}"
+            success = True
+            message = f"Provisioned at 0x{node_address:04X}"
+
+        # Brief pause after disconnect to let BlueZ release the device
+        await asyncio.sleep(0.5)
+        return success, message
 
     except Exception as e:
         _LOGGER.error("Provisioning error for %s: %s", device_address, e)
@@ -320,12 +326,18 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if result[0]:
-            return self.async_abort(
-                reason="provision_success",
-                description_placeholders={
-                    "address": f"0x{self._provision_address:04X}",
-                },
-            )
+            # If a gateway already exists, just report success — sub-devices auto-discover
+            if self._async_current_entries():
+                return self.async_abort(
+                    reason="provision_success",
+                    description_placeholders={
+                        "address": f"0x{self._provision_address:04X}",
+                    },
+                )
+            # No gateway yet — route to gateway setup automatically
+            self._selected_device = getattr(device, "device", device)
+            await asyncio.sleep(8)  # Wait for device to reboot and start advertising
+            return await self.async_step_select_service()
         else:
             return self.async_abort(
                 reason="provision_failed",
@@ -440,13 +452,16 @@ class BLEHomeOptionsFlowHandler(OptionsFlow):
     """Handle BLEHome options."""
 
     def _scan_firmware_files(self) -> list[dict[str, str]]:
-        """Scan custom_components/blehome/bin/ for .bin/.hex files."""
+        """Scan custom_components/blehome/bin/ recursively for .bin/.hex files."""
         files = []
         bin_dir = self.hass.config.path("custom_components/blehome/bin")
         if os.path.isdir(bin_dir):
-            for f in sorted(os.listdir(bin_dir)):
-                if f.lower().endswith((".bin", ".hex")):
-                    files.append({"value": os.path.join(bin_dir, f), "label": f})
+            for root, _dirs, filenames in os.walk(bin_dir):
+                for f in sorted(filenames):
+                    if f.lower().endswith((".bin", ".hex")):
+                        full_path = os.path.join(root, f)
+                        rel_path = os.path.relpath(full_path, bin_dir)
+                        files.append({"value": full_path, "label": rel_path})
         return files
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -477,10 +492,13 @@ class BLEHomeOptionsFlowHandler(OptionsFlow):
         # Show firmware file picker
         fw_options = []
         default_fw = "__none__"
-        for f in firmware_files:
+        for f in sorted(firmware_files, key=lambda x: x["label"]):
             fw_options.append({"value": f["value"], "label": f["label"]})
             if os.path.normpath(current_fw) == os.path.normpath(f["value"]):
                 default_fw = f["value"]
+        # Auto-select latest firmware if none configured
+        if default_fw == "__none__" and fw_options:
+            default_fw = fw_options[-1]["value"]
         if fw_options:
             schema[vol.Required("firmware_choice", default=default_fw)] = selector.SelectSelector(
                 selector.SelectSelectorConfig(options=fw_options),

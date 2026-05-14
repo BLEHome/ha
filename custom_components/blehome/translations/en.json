@@ -3,14 +3,14 @@
     "step": {
       "scan": {
         "title": "Scanning for Devices",
-        "description": "Found {count} WCH device(s). Unprovisioned devices will be automatically recognized and configured.",
+        "description": "Found {count} WCH device(s). If your device is not listed, make sure it's advertising and within range. If it still doesn't appear, try restarting Home Assistant or moving the BLE adapter closer.",
         "data": {
           "device": "Select Device"
         }
       },
       "select_service": {
-        "title": "Select Communication Channel",
-        "description": "The device {device} has multiple services. Please select the one used for BLE communication.",
+        "title": "Set Up Gateway",
+        "description": "This device will act as the mesh gateway connected to Home Assistant. The gateway communicates with other mesh devices via BLE.\n\nDevice: {device}",
         "data": {
           "service_uuid": "Service UUID",
           "char_uuid": "Characteristic UUID"
@@ -26,8 +26,8 @@
         }
       },
       "provision_configure": {
-        "title": "Configure Provisioning",
-        "description": "Configure network key and node address for device {device}.",
+        "title": "Provision New Device",
+        "description": "Configure network settings to add this device to your mesh network.\n\nDevice: {device}",
         "data": {
           "node_address": "Node Address (e.g. 100 or 0x64)",
           "net_key": "Network Key (32 hex chars / 16 bytes)"
@@ -35,9 +35,9 @@
       }
     },
     "error": {
-      "no_devices_found": "No BLEHome devices found within range.",
+      "no_devices_found": "No BLEHome devices found within range. Make sure the device is advertising (LED blinking) and try again.",
       "scan_failed": "Failed to scan for Bluetooth devices.",
-      "service_scan_failed": "Failed to retrieve services from the device.",
+      "service_scan_failed": "Failed to retrieve services from the device. The device may have gone out of range.",
       "invalid_mac": "The MAC address provided is invalid.",
       "no_services_found": "No suitable services found on this device.",
       "invalid_key_length": "Network key must be exactly 32 hex characters (16 bytes).",
@@ -47,17 +47,17 @@
     },
     "abort": {
       "already_configured": "This device is already configured.",
-      "provisioned_device": "This device ({address}) is already provisioned. Use the \"scan\" option in the integration setup to add it.",
+      "provisioned_device": "This device ({address}) is already provisioned and belongs to a mesh network. If you already have a gateway, the device should be auto-discovered. Otherwise, use the manual scan to set up a new gateway.",
       "no_device": "No device selected.",
-      "provision_success": "Successfully provisioned device at address {address}. The device will now restart as a mesh node and should appear in BLE scans as a configured device.\n\nPlease scan again to add it.",
-      "provision_failed": "Provisioning failed: {error}"
+      "provision_success": "Successfully provisioned device at mesh address {address}.\n\nThe device will now restart and join the mesh network. If a gateway is already configured, the new device will be discovered automatically within a few minutes.",
+      "provision_failed": "Provisioning failed: {error}. Make sure the device is within range and try again."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "BLEHome Options",
-        "description": "Configure {count} sub-device(s).",
+        "description": "Configure {count} sub-device(s). Sub-devices are discovered automatically by the gateway after provisioning.",
         "data": {
           "firmware_choice": "Firmware file",
           "remove_subdevices": "Remove sub-devices"

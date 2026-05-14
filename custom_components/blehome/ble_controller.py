@@ -290,11 +290,13 @@ class BLEHomeController:
         self.mac_suffix = ""
         self.config_entry: Optional[ConfigEntry] = None
         self._connection_lock = asyncio.Lock()
+        self._disconnecting = False  # guard to prevent _on_disconnected from firing during cleanup/connect
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._reconnect_task: Optional[asyncio.Task] = None
         self._scan_task: Optional[asyncio.Task] = None
         self.keep_alive_interval = 30
-        self._bthome_dedup: dict[str, int] = {}  # {mac: last_packet_id}
+        self._bthome_dedup: dict[str, int] = {}  # {mac: last_packet_hash}
+        self._BTHOME_DEDUP_MAX = 100
         self.scanner: Optional[BLEHomeScanner] = None
         self._unregister_scanner: Optional[Callable] = None
         self._mock_packet_id = 0
@@ -313,8 +315,8 @@ class BLEHomeController:
         self._version_lock = asyncio.Lock()
 
     async def connect(
-        self, 
-        timeout: Optional[float] = None, 
+        self,
+        timeout: Optional[float] = None,
         retries: Optional[int] = None
     ) -> bool:
         """Connect to the BLE device."""
@@ -324,16 +326,16 @@ class BLEHomeController:
 
             conn_timeout = timeout or self.base_timeout
             conn_retries = retries or self.max_retries
-            
+
             for attempt in range(conn_retries):
                 try:
                     _LOGGER.info(
                         "Attempting to connect to %s (attempt %s/%s), timeout: %ss",
                         self.device_address, attempt + 1, conn_retries, conn_timeout
                     )
-                    
+
                     await self._cleanup_client()
-                    
+
                     ble_device = async_ble_device_from_address(
                         self.hass, self.device_address, connectable=True
                     )
@@ -343,84 +345,94 @@ class BLEHomeController:
                     else:
                         self.client = BleakClient(self.device_address)
                         _LOGGER.warning(
-                            "Device not in HA cache, attempting direct connection: %s", 
+                            "Device not in HA cache, attempting direct connection: %s",
                             self.device_address
                         )
-                    
+
                     await self.client.connect(timeout=conn_timeout)
-                    
-                    if self.client.is_connected:
-                        self.connected = True
-                        _LOGGER.info("Successfully connected to %s", self.device_address)
-                        
-                        await self._setup_notifications()
-                        self._start_heartbeat()
-                        self.client.set_disconnected_callback(self._on_disconnected)
-                        
-                        # Query initial states
-                        for addr in self.subdevices:
-                            self.hass.async_create_task(self.send_query_command(addr))
-                            await asyncio.sleep(0.1)
 
-                        # Trigger Mesh scan after delay
-                        if self._scan_task and not self._scan_task.done():
-                            self._scan_task.cancel()
-                        
-                        def start_scan():
-                            self._scan_task = self.hass.async_create_task(self.async_scan_mesh(20))
+                    # Register disconnect callback immediately to avoid races
+                    self.client.set_disconnected_callback(self._on_disconnected)
 
-                        self.hass.loop.call_later(10.0, start_scan)
+                    # Double-check connection right after connect() returns
+                    if not self.client.is_connected:
+                        _LOGGER.warning("Connection lost immediately after connect to %s", self.device_address)
+                        self.connected = False
+                        continue
 
-                        # Query firmware versions for known sub-devices (old devices silently skip)
-                        if self.subdevices:
-                            self.hass.async_create_task(self._query_all_versions())
+                    _LOGGER.info("Successfully connected to %s", self.device_address)
 
-                        self.hass.bus.async_fire(
-                            f"{DOMAIN}_availability_changed", {"connected": True}
+                    await self._setup_notifications()
+
+                    # Re-check connection after notification setup
+                    if not self.client.is_connected:
+                        _LOGGER.warning("Connection lost during notification setup for %s", self.device_address)
+                        self.connected = False
+                        continue
+
+                    self.connected = True
+                    self._start_heartbeat()
+
+                    # Query initial states
+                    for addr in self.subdevices:
+                        self.hass.async_create_task(self.send_query_command(addr))
+                        await asyncio.sleep(0.1)
+
+                    # Start periodic mesh scan loop
+                    if self._scan_task and not self._scan_task.done():
+                        self._scan_task.cancel()
+                    self._scan_task = self.hass.async_create_task(self._scan_loop())
+
+                    # Query firmware versions for known sub-devices (old devices silently skip)
+                    if self.subdevices:
+                        self.hass.async_create_task(self._query_all_versions())
+
+                    self.hass.bus.async_fire(
+                        f"{DOMAIN}_availability_changed", {"connected": True}
+                    )
+
+                    # --- Bluetooth Proxy Registration ---
+                    if HAS_BLUETOOTH_SCANNER and not self.scanner:
+                        try:
+                            source_mac = self.device_address.upper()
+                            registry = dr.async_get(self.hass)
+
+                            # Ensure the gateway device exists in registry
+                            entry_id = self.config_entry.entry_id if self.config_entry else None
+
+                            try:
+                                device = registry.async_get_or_create(
+                                    config_entry_id=entry_id,
+                                    identifiers={(DOMAIN, self.device_address)},
+                                    manufacturer="BLEHome",
+                                    name=self.name or f"BLEHome Mesh Gateway",
+                                    model="Mesh Gateway Proxy",
+                                )
+                                dev_id = device.id
+                            except Exception as dr_err:
+                                _LOGGER.warning("Could not link device to registry (expected during reload): %s", dr_err)
+                                dev_id = None
+
+                            self.scanner = BLEHomeScanner(
+                                self.hass,
+                                entry_id,
+                                source_mac,
+                                f"BLEHome Mesh Proxy ({self.mac_suffix.upper()})",
+                                self,
+                                device_id=dev_id
+                            )
+                            self._unregister_scanner = async_register_scanner(self.hass, self.scanner)
+                            _LOGGER.info("SUCCESS: Registered BLEHome Mesh Gateway [%s] as Bluetooth Proxy", source_mac)
+                        except Exception as e:
+                            _LOGGER.error("CRITICAL: Failed to register Bluetooth Proxy: %s", e, exc_info=True)
+                    elif not HAS_BLUETOOTH_SCANNER:
+                        _LOGGER.warning(
+                            "Bluetooth proxy not registered: HAS_BLUETOOTH_SCANNER=False "
+                            "(bluetooth integration or habluetooth missing)"
                         )
 
-                        # --- Bluetooth Proxy Registration ---
-                        if HAS_BLUETOOTH_SCANNER and not self.scanner:
-                            try:
-                                source_mac = self.device_address.upper()
-                                registry = dr.async_get(self.hass)
-                                
-                                # Ensure the gateway device exists in registry
-                                entry_id = self.config_entry.entry_id if self.config_entry else None
+                    return True
 
-                                try:
-                                    device = registry.async_get_or_create(
-                                        config_entry_id=entry_id,
-                                        identifiers={(DOMAIN, self.device_address)},
-                                        manufacturer="BLEHome",
-                                        name=self.name or f"BLEHome Mesh Gateway",
-                                        model="Mesh Gateway Proxy",
-                                    )
-                                    dev_id = device.id
-                                except Exception as dr_err:
-                                    _LOGGER.warning("Could not link device to registry (expected during reload): %s", dr_err)
-                                    dev_id = None
-
-                                self.scanner = BLEHomeScanner(
-                                    self.hass, 
-                                    entry_id,
-                                    source_mac, 
-                                    f"BLEHome Mesh Proxy ({self.mac_suffix.upper()})",
-                                    self,
-                                    device_id=dev_id
-                                )
-                                self._unregister_scanner = async_register_scanner(self.hass, self.scanner)
-                                _LOGGER.info("SUCCESS: Registered BLEHome Mesh Gateway [%s] as Bluetooth Proxy", source_mac)
-                            except Exception as e:
-                                _LOGGER.error("CRITICAL: Failed to register Bluetooth Proxy: %s", e, exc_info=True)
-                        elif not HAS_BLUETOOTH_SCANNER:
-                            _LOGGER.warning(
-                                "Bluetooth proxy not registered: HAS_BLUETOOTH_SCANNER=False "
-                                "(bluetooth integration or habluetooth missing)"
-                            )
-
-                        return True
-                    
                 except (TimeoutError, BleakError, Exception) as e:
                     _LOGGER.debug(
                         "Connection attempt %s failed for %s: %s",
@@ -429,7 +441,7 @@ class BLEHomeController:
                     if attempt < conn_retries - 1:
                         wait_time = min(5 * (attempt + 1), 30)
                         await asyncio.sleep(wait_time)
-            
+
             self.connected = False
             return False
 
@@ -465,16 +477,25 @@ class BLEHomeController:
 
     async def _cleanup_client(self) -> None:
         """Clean up client resources."""
+        self._disconnecting = True
         self._stop_heartbeat()
-        
-        # 强制停止扫描任务
+
+        # Cancel scan task
         if self._scan_task and not self._scan_task.done():
             self._scan_task.cancel()
+            try:
+                await asyncio.wait_for(self._scan_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
             self._scan_task = None
 
         current_task = asyncio.current_task()
         if self._reconnect_task and self._reconnect_task != current_task and not self._reconnect_task.done():
             self._reconnect_task.cancel()
+            try:
+                await asyncio.wait_for(self._reconnect_task, timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
             self._reconnect_task = None
 
         if self._unregister_scanner:
@@ -484,13 +505,22 @@ class BLEHomeController:
 
         if self.client:
             try:
+                # Stop notifications first, then disconnect
+                if self.notify_uuid:
+                    try:
+                        await self.client.stop_notify(self.notify_uuid)
+                    except Exception:
+                        pass
                 await self.client.disconnect()
             except Exception as e:
                 _LOGGER.debug("Error during client cleanup: %s", e)
             finally:
                 self.client = None
-        
+                # Give BlueZ time to release the device resource
+                await asyncio.sleep(0.3)
+
         self.connected = False
+        self._disconnecting = False
 
     async def disconnect(self) -> None:
         """Disconnect from the device."""
@@ -500,6 +530,9 @@ class BLEHomeController:
 
     def _on_disconnected(self, client: BleakClient) -> None:
         """Handle disconnection."""
+        if self._disconnecting:
+            _LOGGER.debug("Ignoring disconnect callback during intentional cleanup for %s", self.device_address)
+            return
         if self.connected:
             _LOGGER.debug("Disconnected unexpectedly from %s", self.device_address)
             self.connected = False
@@ -591,6 +624,9 @@ class BLEHomeController:
             payload_hash = hash(bytes(adv_payload))
             if self._bthome_dedup.get(mac) == payload_hash:
                 return
+            # Limit dedup cache size to prevent memory leaks
+            if len(self._bthome_dedup) >= self._BTHOME_DEDUP_MAX:
+                self._bthome_dedup.clear()
             self._bthome_dedup[mac] = payload_hash
 
             _LOGGER.info("Proxying BTHome packet from %s, RSSI: %d, Data: %s", mac, rssi, adv_payload.hex())
@@ -699,6 +735,25 @@ class BLEHomeController:
                 continue
             await self.send_query_command(addr)
             await asyncio.sleep(1.0)
+
+    async def _scan_loop(self) -> None:
+        """Periodically scan mesh for new devices, with backoff between passes."""
+        try:
+            # First scan after short delay
+            await asyncio.sleep(5.0)
+            _LOGGER.info("Starting periodic mesh scan loop")
+            while self.connected and self.hass.is_running:
+                _LOGGER.debug("Scanning mesh for new devices...")
+                await self.async_scan_mesh(20)
+                # Wait 5 minutes before next scan
+                for _ in range(300):
+                    if not self.connected or not self.hass.is_running:
+                        return
+                    await asyncio.sleep(1.0)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            _LOGGER.exception("Mesh scan loop error")
 
     async def _persistent_reconnect(self) -> None:
         """Retry connection with exponential backoff."""

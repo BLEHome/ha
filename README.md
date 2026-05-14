@@ -60,6 +60,21 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 2. Restart Home Assistant.
 3. Go to Settings > Devices & Services > Add Integration and search for "BLEHome".
 
+## Changelog
+
+### v2.0.0
+- TLED_XXXX BLE broadcast name (MAC suffix for device identification)
+- Auto-select latest firmware in options
+- Auto-route to gateway setup after provisioning
+- Periodic mesh scan loop for reliable device discovery
+- BLE connection stability: race condition fixes and state cleanup
+- Translation updates and documentation improvements
+
+### v1.9.0
+- Provisioning, OTA through gateway, and enhanced device management
+- Brand icons and gamma correction
+- OTA reliability for distant mesh devices
+
 ## Contact & Community
 
 - **Website**: [blehome.org](https://blehome.org)

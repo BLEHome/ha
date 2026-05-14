@@ -3,14 +3,14 @@
     "step": {
       "scan": {
         "title": "正在扫描设备",
-        "description": "发现了 {count} 个 WCH 设备。未配网设备将被自动识别并进入配置流程。",
+        "description": "发现了 {count} 个 WCH 设备。如果设备未出现，请确认它在广播且在范围内。如果仍未出现，请尝试重启 Home Assistant 或将蓝牙适配器移近。",
         "data": {
           "device": "选择设备"
         }
       },
       "select_service": {
-        "title": "选择通信通道",
-        "description": "设备 {device} 拥有多个服务。请选择用于 BLE 通信的服务和特征值。",
+        "title": "设置网关",
+        "description": "该设备将作为连接 Home Assistant 的 Mesh 网关。网关通过 BLE 与其它 Mesh 设备通信。\n\n设备：{device}",
         "data": {
           "service_uuid": "服务 UUID",
           "char_uuid": "特征值 UUID"
@@ -26,8 +26,8 @@
         }
       },
       "provision_configure": {
-        "title": "配置配网参数",
-        "description": "为设备 {device} 配置网络密钥和节点地址。",
+        "title": "配网新设备",
+        "description": "配置网络参数，将该设备添加到您的 Mesh 网络中。\n\n设备：{device}",
         "data": {
           "node_address": "节点地址（如 100 或 0x64）",
           "net_key": "网络密钥（32位十六进制）"
@@ -35,9 +35,9 @@
       }
     },
     "error": {
-      "no_devices_found": "范围内未发现 BLEHome 设备。",
+      "no_devices_found": "范围内未发现 BLEHome 设备。请确认设备正在广播（LED闪烁）后重试。",
       "scan_failed": "扫描蓝牙设备失败。",
-      "service_scan_failed": "无法从设备获取服务信息。",
+      "service_scan_failed": "无法从设备获取服务信息，设备可能已超出范围。",
       "invalid_mac": "提供的 MAC 地址无效。",
       "no_services_found": "在该设备上未发现合适的服务。",
       "invalid_key_length": "网络密钥必须是 32 个十六进制字符（16 字节）。",
@@ -47,17 +47,17 @@
     },
     "abort": {
       "already_configured": "该设备已经配置过了。",
-      "provisioned_device": "设备（{address}）已配网。请使用配置流程中的 \"scan\" 选项来添加它。",
+      "provisioned_device": "设备（{address}）已配网并属于某个 Mesh 网络。如果已有网关，该设备将被自动发现。否则请使用手动扫描设置新网关。",
       "no_device": "未选择设备。",
-      "provision_success": "设备已成功配网，地址为 {address}。设备将重启为 Mesh 节点，请在 BLE 扫描中重新发现它。\n\n请重新扫描以添加为已配网设备。",
-      "provision_failed": "配网失败：{error}"
+      "provision_success": "设备已成功配网，Mesh 地址为 {address}。\n\n设备将重启并加入 Mesh 网络。如果已配置网关，新设备将在数分钟内被自动发现。",
+      "provision_failed": "配网失败：{error}。请确认设备在范围内后重试。"
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "BLEHome 选项",
-        "description": "已配置 {count} 个子设备。",
+        "description": "已配置 {count} 个子设备。子设备配网后会被网关自动发现。",
         "data": {
           "firmware_choice": "固件文件",
           "remove_subdevices": "移除子设备"
