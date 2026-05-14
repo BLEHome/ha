@@ -549,7 +549,14 @@ class BLEHomeController:
             return
 
         is_on = data[5] != 0
-        brightness = data[6]
+        # 逆 Gamma 2.2: 设备 duty(0-100) → HA brightness(0-255)
+        duty = data[6]
+        if duty <= 0:
+            brightness = 0
+        elif duty >= 100:
+            brightness = 255
+        else:
+            brightness = int(round(255.0 * ((duty / 100.0) ** (1.0 / 2.2))))
         
         _LOGGER.debug("Notification received: Addr=0x%04X, On=%s, Bri=%s", address, is_on, brightness)
         
@@ -959,9 +966,20 @@ class BLEHomeController:
         ])
         return await self.send_command(cmd_frame)
 
+    @staticmethod
+    def _gamma_correct(brightness: int) -> int:
+        """Gamma 2.2 校正: HA brightness(0-255) → 设备 duty(0-100)"""
+        if brightness <= 0:
+            return 0
+        if brightness >= 255:
+            return 100
+        fraction = brightness / 255.0
+        duty = int(round(100.0 * (fraction ** 2.2)))
+        return max(0, min(100, duty))
+
     async def send_control_command(self, address: int, is_on: bool, brightness: int) -> bool:
         """Send a light control command."""
-        normalized_brightness = brightness if brightness else 0
+        normalized_brightness = self._gamma_correct(brightness) if brightness else 0
         cmd_frame = bytearray([
             HEADER,
             address & 0xFF,
@@ -976,7 +994,7 @@ class BLEHomeController:
         if success and address in self.subdevices:
             self.subdevices[address]["state"] = {
                 "on": is_on,
-                "brightness": normalized_brightness
+                "brightness": brightness if brightness else 0  # 保持 HA 0-255 尺度
             }
             self.hass.bus.async_fire(
                 f"{DOMAIN}_subdevice_updated",
