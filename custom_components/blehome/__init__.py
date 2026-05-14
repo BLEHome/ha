@@ -32,6 +32,20 @@ SERVICE_DEBUG_INJECT = "debug_inject_bthome"
 SERVICE_REMOVE_SUBDEVICE = "remove_subdevice"
 SERVICE_OTA_UPDATE = "ota_update"
 
+
+def _get_controllers(hass, entry_id=None, mac=None):
+    """Get BLEHome controllers filtered by entry_id or MAC address."""
+    controllers = [
+        c for k, c in hass.data[DOMAIN].items()
+        if k != _SERVICES_REGISTERED_KEY
+    ]
+    if entry_id:
+        return [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
+    if mac:
+        return [c for c in controllers if c.mac_address.upper() == mac.upper()]
+    return controllers
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BLEHome from a config entry."""
     mac: str = entry.data[CONF_MAC]
@@ -91,14 +105,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async def _handle_debug_status(call) -> None:
             entry_id = call.data.get("entry_id")
             mac = call.data.get("mac")
-            controllers = [
-                c for k, c in hass.data[DOMAIN].items()
-                if k != _SERVICES_REGISTERED_KEY
-            ]
-            if entry_id:
-                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
-            elif mac:
-                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+            controllers = _get_controllers(hass, entry_id, mac)
 
             for c in controllers:
                 if c:
@@ -109,14 +116,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mac = call.data.get("mac")
             temp_c = call.data.get("temperature")
             target_mac = call.data.get("target_mac")
-            controllers = [
-                c for k, c in hass.data[DOMAIN].items()
-                if k != _SERVICES_REGISTERED_KEY
-            ]
-            if entry_id:
-                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
-            elif mac:
-                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+            controllers = _get_controllers(hass, entry_id, mac)
 
             for c in controllers:
                 if c:
@@ -151,14 +151,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             mac = call.data.get("mac")
             mesh_address = call.data.get("mesh_address")
 
-            controllers = [
-                c for k, c in hass.data[DOMAIN].items()
-                if k != _SERVICES_REGISTERED_KEY
-            ]
-            if entry_id:
-                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
-            elif mac:
-                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+            controllers = _get_controllers(hass, entry_id, mac)
 
             for controller in controllers:
                 if not controller:
@@ -203,14 +196,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             node_address = call.data.get("node_address")
             firmware_path = call.data.get("firmware_path")
 
-            controllers = [
-                c for k, c in hass.data[DOMAIN].items()
-                if k != _SERVICES_REGISTERED_KEY
-            ]
-            if entry_id:
-                controllers = [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
-            elif mac:
-                controllers = [c for c in controllers if c.mac_address.upper() == mac.upper()]
+            controllers = _get_controllers(hass, entry_id, mac)
 
             for controller in controllers:
                 if not controller:

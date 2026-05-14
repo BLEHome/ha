@@ -30,7 +30,6 @@ except ImportError:
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
@@ -734,43 +733,7 @@ class BLEHomeController:
                     await self.send_command(heartbeat_cmd)
 
                     if self.client and self.client.is_connected and self.bthome_mock_enabled:
-                        # --- 调试：模拟 BTHome 广播注入 ---
-                        # 模拟一个 MAC 为 AA:BB:CC:DD:EE:01 的设备，上报温度 25.00 C
-                        # BTHome V2 格式
-                        # Byte 0: Device Info (0x40 = No encryption, V2)
-                        # Byte 1: Packet ID (0x00)
-                        # Byte 2: Counter value
-                        # Byte 3: Object ID (0x02 = Temperature)
-                        # Byte 4-5: Value (0.01 factor, little endian)
-                        
-                        import random
-                        # 使用一个新的 MAC 地址以触发重新发现
-                        mock_mac_bytes = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01])
-                        
-                        # 随机生成 20.00 - 30.00 C
-                        temp_val = random.randint(2000, 3000)
-                        
-                        # 生成一个递增的 Packet ID (0-255)
-                        if not hasattr(self, "_mock_packet_id"):
-                            self._mock_packet_id = 0
-                        self._mock_packet_id = (self._mock_packet_id + 1) % 256
-                        
-                        mock_payload = bytes([
-                            0x40,           # Device Info: No encryption, BTHome v2
-                            0x00,           # Packet ID type
-                            self._mock_packet_id, # Value
-                            0x02,           # Temperature type
-                            temp_val & 0xFF, (temp_val >> 8) & 0xFF # Value
-                        ])
-                        
-                        mock_pkg = bytearray([HEADER, 0x00, 0x00, 0x82, 0x03, 0xE2])
-                        mock_pkg.extend(mock_mac_bytes)
-                        mock_pkg.append(len(mock_payload))
-                        mock_pkg.extend(mock_payload)
-                        
-                        _LOGGER.info("DEBUG: Triggering mock BTHome injection (Temp: %s C, Cnt: %s)", temp_val/100.0, self._mock_packet_id)
-                        self._handle_bthome_proxy_packet(mock_pkg)
-
+                        self.debug_inject_mock_bthome(mac="AA:BB:CC:DD:EE:01")
 
                     rssi = None
                     try:
@@ -1077,46 +1040,6 @@ class BLEHomeController:
             dr_registry.async_update_device(device.id, sw_version=sw_ver)
 
     # --- Provisioning ---
-
-    async def async_get_network_info(self) -> Optional[dict[str, Any]]:
-        """Get IV index and flag from the gateway.
-
-        Sends CMD_PROVISION_INFO (0xA0) with control_code=0 (get).
-        ACK: [0x80, status, iv(4), flag] = 7 bytes
-        Returns dict with 'iv_index' and 'flag', or None on failure.
-        """
-        cmd = bytes([0xA0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-        ack = await self._send_and_wait(cmd, 0x80, timeout=10.0)
-        if ack is None or len(ack) < 7:
-            return None
-        # ack[1] = status, ack[2..5] = iv (LE), ack[6] = flag
-        if ack[1] != 0:
-            return None
-        iv_index = ack[2] | (ack[3] << 8) | (ack[4] << 16) | (ack[5] << 24)
-        return {"iv_index": iv_index, "flag": ack[6]}
-
-    async def async_set_network_info(self, iv_index: int, flag: int) -> bool:
-        """Set IV index and flag on an unprovisioned device.
-
-        Sends CMD_PROVISION_INFO (0xA0) with control_code=1 (write).
-        ACK: [0x80, status] = 2 bytes minimum
-        Returns True if successful.
-        """
-        cmd = bytes([
-            0xA0, 0x01,
-            iv_index & 0xFF, (iv_index >> 8) & 0xFF,
-            (iv_index >> 16) & 0xFF, (iv_index >> 24) & 0xFF,
-            flag & 0xFF,
-        ])
-        ack = await self._send_and_wait(cmd, 0x80, timeout=10.0)
-        if ack is None or len(ack) < 2:
-            _LOGGER.error("Set network info: no ACK or too short")
-            return False
-        if ack[1] != 0:
-            _LOGGER.error("Set network info failed, status=%d", ack[1])
-            return False
-        _LOGGER.info("Network info set: iv_index=%d, flag=%d", iv_index, flag)
-        return True
 
     # --- OTA Update ---
 
@@ -1517,11 +1440,3 @@ class BLEHomeController:
 
         return result
 
-    async def __aenter__(self) -> BLEHomeController:
-        """Async context manager enter."""
-        await self.connect()
-        return self
-
-    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
-        """Async context manager exit."""
-        await self.disconnect()

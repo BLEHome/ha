@@ -32,15 +32,7 @@ CONF_SERVICE_UUID = "service_uuid"
 CONF_CHAR_UUID = "char_uuid"
 CONF_SUBDEVICES = "subdevices"
 CONF_BTHOME_MOCK = "bthome_mock"
-CONF_NET_KEY = "net_key"
 CONF_FIRMWARE_PATH = "firmware_path"
-CONF_NEXT_NODE_ADDR = "next_node_address"
-
-# Default 16-byte network key (all zeros)
-DEFAULT_NET_KEY = bytes(16)
-
-# Default next node address for provisioning
-DEFAULT_NEXT_NODE_ADDR = 100
 
 # Mesh protocol commands
 CMD_DELETE_NODE = 0xA2

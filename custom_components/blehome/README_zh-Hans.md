@@ -42,7 +42,7 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 
 - **[协议规范 (spec)](https://github.com/blehome/spec)**：专为蓝牙优化的、支持多跳接力的可靠 Mesh 控制协议。
 - **[核心框架 (framework)](https://github.com/blehome/framework)**：跨平台实现的底层逻辑库，确保不同设备间的互操作性。
-- **[Home Assistant 集成 (ha)](https://github.com/blehome/ha)**：将 BLEHome 设备接入全球领先智能家居操作系统的官方桥梁。
+- **[Home Assistant 集成 (ha)](https://github.com/BLEHome/ha)**：将 BLEHome 设备接入全球领先智能家居操作系统的官方桥梁。
 - **[嵌入式固件 (sdk)](https://github.com/blehome/sdk)**：为主流芯片（ESP32、WCH CH58x/CH59x 等）提供的开发 SDK。
 - **[配网与升级 App (app)](https://github.com/blehome/app)**：用于设备一键配网、Mesh 组网管理及固件升级的移动端工具。
 
@@ -56,21 +56,36 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 
 ## 安装方法
 
+### 方式一：HACS（推荐）
+1. 打开 HACS，点击右上角三个点，选择**自定义存储库**。
+2. 添加 `https://github.com/BLEHome/ha`，类别选择**集成**。
+3. 搜索 **BLEHome** 并安装。
+
+### 方式二：手动安装
 1. 将 `blehome` 文件夹拷贝到您的 `custom_components` 目录。
 2. 重启 Home Assistant。
-3. 前往“设置 > 设备与服务 > 添加集成”，搜索 "BLEHome" 进行添加。
+3. 前往”设置 > 设备与服务 > 添加集成”，搜索 “BLEHome” 进行添加。
 
 ## 联系与社区
 
 - **官方网站**: [blehome.org](https://blehome.org)
-- **GitHub**: [blehome/ha](https://github.com/blehome/ha)
+- **GitHub**: [BLEHome/ha](https://github.com/BLEHome/ha)
 - **协议标准**: BLEHome Mesh 控制协议 v1.0
 - **开源协议**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - **官方邮箱**: [admin@blehome.org](mailto:admin@blehome.org)
 
 ## 更新日志
 
-### v1.7.0
+### v1.9.0
+- **协议文档**: 添加完整的 BLE GATT 通信协议规范。
+- **HACS CI**: 添加 HACS 和 Hassfest 验证工作流。
+- **品牌图标**: 添加 `brand/` 目录，支持 HA 2026.3+ 本地品牌代理 API。
+- **代码清理**: 移除死代码，补全翻译，优化控制器查找逻辑。
+
+### v1.8.0
+- **Gamma 2.2 亮度校正**: 线性亮度曲线现在符合人眼感知，实现平滑自然的调光效果。
+- **接收端逆 Gamma 校正**: 修复了 Home Assistant 和设备之间的 Gamma 校正不一致问题，确保亮度双向一致。
+- **品牌图标**: 添加品牌图标，支持 HA 2026.3+ 本地品牌代理 API。
 - **远程设备 OTA 可靠性提升**: 每块超时增加至 120s，最多重试 5 次。对超时和 status=1 均进行重试，远距离 Mesh 设备也能稳定完成 OTA 升级。
 - **OTA 验证进度显示**: 验证阶段现在显示真实百分比进度，不再卡在 100%。通知标题在验证阶段显示为"OTA 验证"。
 - **清除 BLE 缓冲区残留**: OTA 完成后重新订阅通知，清除累积的 BLE 缓冲区状态，提高后续命令的成功率。
@@ -95,6 +110,10 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 - Mesh 子设备灯光控制（开关、亮度）
 - BTHome 代理广播注入
 - 直连设备 OTA 固件升级
+
+## 通信协议
+
+详见 [PROTOCOL.md](../../PROTOCOL.md) 完整的 BLE GATT 通信协议规范。
 
 ## 鸣谢
 

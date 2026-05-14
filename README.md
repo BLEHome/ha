@@ -35,7 +35,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 - **[spec](https://github.com/blehome/spec)**: The high-efficiency, multi-hop Mesh control protocol specification.
 - **[framework](https://github.com/blehome/framework)**: Cross-platform logic libraries implementing the BLEHome standard.
-- **[ha](https://github.com/blehome/ha)**: The official Home Assistant integration (this repository).
+- **[ha](https://github.com/BLEHome/ha)**: The official Home Assistant integration (this repository).
 - **[sdk](https://github.com/blehome/sdk)**: Ready-to-use SDKs for popular chips (ESP32, WCH CH58x/59x, etc.).
 - **[app](https://github.com/blehome/app)**: Mobile application for seamless Provisioning, Mesh management, and OTA updates.
 
@@ -52,7 +52,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 ### Method 1: HACS (Recommended)
 1. Open HACS in Home Assistant.
 2. Click the three dots in the top right corner and select **Custom repositories**.
-3. Add `https://github.com/blehome/ha` with category **Integration**.
+3. Add `https://github.com/BLEHome/ha` with category **Integration**.
 4. Search for **BLEHome** and install.
 
 ### Method 2: Manual
@@ -63,7 +63,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 ## Contact & Community
 
 - **Website**: [blehome.org](https://blehome.org)
-- **GitHub**: [blehome/ha](https://github.com/blehome/ha)
+- **GitHub**: [BLEHome/ha](https://github.com/BLEHome/ha)
 - **Standard**: BLEHome Mesh Control Protocol v1.0
 - **License**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - **Email**: [admin@blehome.org](mailto:admin@blehome.org)

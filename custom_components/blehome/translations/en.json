@@ -25,10 +25,6 @@
           "char_uuid": "Characteristic UUID"
         }
       },
-      "bluetooth_confirm": {
-        "title": "Confirm Device",
-        "description": "Do you want to add {name} ({address})?"
-      },
       "provision_configure": {
         "title": "Configure Provisioning",
         "description": "Configure network key and node address for device {device}.",
@@ -97,9 +93,21 @@
     }
   },
   "services": {
+    "debug_status": {
+      "name": "Debug status",
+      "description": "Dump the current debug status of the BLEHome gateway to the log."
+    },
+    "debug_inject_bthome": {
+      "name": "Inject BTHome mock",
+      "description": "Inject a mock BTHome advertisement through the gateway for testing purposes."
+    },
     "remove_subdevice": {
       "name": "Remove sub-device",
       "description": "Remove a mesh sub-device from the gateway and clean up its registries. Sends an unprovision command to the device over the mesh network."
+    },
+    "ota_update": {
+      "name": "OTA update",
+      "description": "Perform a firmware OTA update on a connected sub-device through the gateway."
     }
   }
 }

@@ -25,10 +25,6 @@
           "char_uuid": "特征值 UUID"
         }
       },
-      "bluetooth_confirm": {
-        "title": "确认设备",
-        "description": "您确定要添加 {name} ({address}) 吗？"
-      },
       "provision_configure": {
         "title": "配置配网参数",
         "description": "为设备 {device} 配置网络密钥和节点地址。",
@@ -97,9 +93,21 @@
     }
   },
   "services": {
+    "debug_status": {
+      "name": "调试状态",
+      "description": "将 BLEHome 网关当前调试状态输出到日志。"
+    },
+    "debug_inject_bthome": {
+      "name": "注入 BTHome 模拟数据",
+      "description": "通过网关注入一条模拟的 BTHome 广播，用于测试目的。"
+    },
     "remove_subdevice": {
       "name": "移除子设备",
       "description": "从网关移除一个 Mesh 子设备并清理其注册表条目。同时通过 Mesh 网络向设备发送解除配网命令，使其从 Mesh 网络中移除。"
+    },
+    "ota_update": {
+      "name": "OTA 升级",
+      "description": "通过网关对已连接的子设备执行固件 OTA 升级。"
     }
   }
 }

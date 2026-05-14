@@ -44,7 +44,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 - **[spec](https://github.com/blehome/spec)**: The high-efficiency, multi-hop Mesh control protocol specification.
 - **[framework](https://github.com/blehome/framework)**: Cross-platform logic libraries implementing the BLEHome standard.
-- **[ha](https://github.com/blehome/ha)**: The official Home Assistant integration (this repository).
+- **[ha](https://github.com/BLEHome/ha)**: The official Home Assistant integration (this repository).
 - **[sdk](https://github.com/blehome/sdk)**: Ready-to-use SDKs for popular chips (ESP32, WCH CH58x/59x, etc.).
 - **[app](https://github.com/blehome/app)**: Mobile application for seamless Provisioning, Mesh management, and OTA updates.
 
@@ -58,6 +58,13 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Installation
 
+### Method 1: HACS (Recommended)
+1. Open HACS in Home Assistant.
+2. Click the three dots in the top right corner and select **Custom repositories**.
+3. Add `https://github.com/BLEHome/ha` with category **Integration**.
+4. Search for **BLEHome** and install.
+
+### Method 2: Manual
 1. Copy the `blehome` folder to your `custom_components` directory.
 2. Restart Home Assistant.
 3. Go to Settings > Devices & Services > Add Integration and search for "BLEHome".
@@ -65,14 +72,23 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 ## Contact & Community
 
 - **Website**: [blehome.org](https://blehome.org)
-- **GitHub**: [blehome/ha](https://github.com/blehome/ha)
+- **GitHub**: [BLEHome/ha](https://github.com/BLEHome/ha)
 - **Standard**: BLEHome Mesh Control Protocol v1.0
 - **License**: [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0)
 - **Email**: [admin@blehome.org](mailto:admin@blehome.org)
 
 ## Changelog
 
-### v1.7.0
+### v1.9.0
+- **Protocol Documentation**: Added comprehensive BLE GATT protocol specification.
+- **HACS CI**: Added HACS and Hassfest validation workflows.
+- **Brand Icons**: Added `brand/` directory for HA 2026.3+ local brand proxy API.
+- **Code Cleanup**: Removed dead provisioning code, fixed translations, optimized duplicate controller lookup logic.
+
+### v1.8.0
+- **Gamma 2.2 Brightness Correction**: Linear brightness curve now matches human perception for smooth, natural dimming.
+- **Inverse Gamma on Receive**: Fixed inverse gamma on receive for consistent round-trip brightness between Home Assistant and the device.
+- **Brand Icons**: Added brand icons for HA 2026.3+ local brand proxy API support.
 - **OTA Reliability for Distant Devices**: Increased per-chunk timeout to 120s with 5 retries. Retry on both timeout and non-zero status (status=1). Distant mesh devices can now complete OTA reliably.
 - **OTA Verification Progress**: Verification phase now shows actual percentage progress instead of stuck at 100%. Notification label changes to "OTA 验证" during verify.
 - **Stale Buffer Cleanup**: Re-subscribes to BLE notifications after OTA to clear accumulated buffer state, improving success rate for subsequent commands.
@@ -97,6 +113,10 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 - Light control (on/off, brightness) for mesh sub-devices
 - BTHome proxy advertisement injection
 - OTA firmware update for direct-connected devices
+
+## Protocol
+
+See [PROTOCOL.md](../../PROTOCOL.md) for the complete BLE GATT communication protocol specification.
 
 ## Credits
 
