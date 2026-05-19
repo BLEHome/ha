@@ -4,12 +4,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Optional, Callable
+from collections.abc import Callable
+from typing import Any
 
-from bleak import BleakClient, BleakError, BLEDevice, AdvertisementData
+from bleak import AdvertisementData, BleakClient, BleakError, BLEDevice
 from homeassistant.components.bluetooth import (
-    async_ble_device_from_address,
     BluetoothServiceInfoBleak,
+    async_ble_device_from_address,
 )
 
 # --- 核心修复：精准导入最新的蓝牙基类以通过类型检查 ---
@@ -33,20 +34,19 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 
 from .const import (
-    DOMAIN,
-    HEADER,
-    CONTROL_CMD,
-    QUERY_CMD,
     BTHOME_PROXY_CMD,
-    CONF_CHAR_UUID,
     CMD_DELETE_NODE,
     CMD_DELETE_NODE_ACK,
+    CONTROL_CMD,
+    DOMAIN,
+    HEADER,
+    QUERY_CMD,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _parse_hex_file(filepath: str) -> Optional[tuple[bytes, int]]:
+def _parse_hex_file(filepath: str) -> tuple[bytes, int] | None:
     """Parse an Intel HEX file into contiguous bytes.
 
     Returns (data_bytes, min_address) or None on error.
@@ -56,13 +56,13 @@ def _parse_hex_file(filepath: str) -> Optional[tuple[bytes, int]]:
     upper_addr = 0
     seg_base = 0
     address_mode = 0  # 0=16bit, 2=segment, 4=linear
-    min_addr: Optional[int] = None
+    min_addr: int | None = None
     max_addr = 0
 
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath) as f:
             lines = f.readlines()
-    except (IOError, OSError) as e:
+    except OSError as e:
         _LOGGER.error("Cannot read HEX file %s: %s", filepath, e)
         return None
 
@@ -120,11 +120,11 @@ class BLEHomeScanner(BaseScanner):
     """Bluetooth scanner for BLEHome Proxy."""
 
     def __init__(
-        self, 
-        hass: HomeAssistant, 
-        entry_id: str | None, 
-        source: str, 
-        name: str, 
+        self,
+        hass: HomeAssistant,
+        entry_id: str | None,
+        source: str,
+        name: str,
         connector: Any,
         device_id: str | None = None
     ) -> None:
@@ -138,7 +138,7 @@ class BLEHomeScanner(BaseScanner):
         self._scanning = True
         self._discovered_devices: dict[str, tuple[Any, Any]] = {}
         self._callback: Callable[[BluetoothServiceInfoBleak], None] | None = None
-        
+
         # 核心修复：根据 BaseScanner 实际定义的参数进行调用
         # BaseHaScanner 在新版本中通常只需要 source 和 name
         if HAS_BLUETOOTH_SCANNER and BaseScanner is not object:
@@ -167,7 +167,7 @@ class BLEHomeScanner(BaseScanner):
             list(service_info.service_data.keys()),
             service_info.source,
         )
-        
+
         # 优先使用标准回调机制
         if hasattr(self, "async_on_advertisement"):
             self.async_on_advertisement(service_info)
@@ -264,12 +264,12 @@ class BLEHomeScanner(BaseScanner):
 
 class BLEHomeController:
     """Control connection and communication with BLEHome devices."""
-    
+
     def __init__(
-        self, 
-        hass: HomeAssistant, 
-        device_address: str, 
-        service_uuid: str, 
+        self,
+        hass: HomeAssistant,
+        device_address: str,
+        service_uuid: str,
         char_uuid: str
     ) -> None:
         """Initialize the controller."""
@@ -278,9 +278,9 @@ class BLEHomeController:
         self.mac_address = device_address.upper()
         self.service_uuid = service_uuid
         self.char_uuid = char_uuid
-        self.notify_uuid: Optional[str] = None
+        self.notify_uuid: str | None = None
         self.name = ""
-        self.client: Optional[BleakClient] = None
+        self.client: BleakClient | None = None
         self.connected = False
         self.max_retries = 3
         self.base_timeout = 15.0
@@ -288,36 +288,36 @@ class BLEHomeController:
         self.gateway_address = 0x0001
         self.device_type = "blehome.tled"
         self.mac_suffix = ""
-        self.config_entry: Optional[ConfigEntry] = None
+        self.config_entry: ConfigEntry | None = None
         self._connection_lock = asyncio.Lock()
         self._disconnecting = False  # guard to prevent _on_disconnected from firing during cleanup/connect
-        self._heartbeat_task: Optional[asyncio.Task] = None
-        self._reconnect_task: Optional[asyncio.Task] = None
-        self._scan_task: Optional[asyncio.Task] = None
+        self._heartbeat_task: asyncio.Task | None = None
+        self._reconnect_task: asyncio.Task | None = None
+        self._scan_task: asyncio.Task | None = None
         self.keep_alive_interval = 30
         self._bthome_dedup: dict[str, int] = {}  # {mac: last_packet_hash}
         self._BTHOME_DEDUP_MAX = 100
-        self.scanner: Optional[BLEHomeScanner] = None
-        self._unregister_scanner: Optional[Callable] = None
+        self.scanner: BLEHomeScanner | None = None
+        self._unregister_scanner: Callable | None = None
         self._mock_packet_id = 0
         self._logged_bt_manager_methods = False
         self.bthome_mock_enabled = False
         # Generic command/ACK mechanism for provisioning, OTA, version queries
         self._cmd_lock = asyncio.Lock()
-        self._cmd_event: Optional[asyncio.Event] = None
-        self._cmd_ack_byte: Optional[int] = None
-        self._cmd_ack_data: Optional[bytes] = None
+        self._cmd_event: asyncio.Event | None = None
+        self._cmd_ack_byte: int | None = None
+        self._cmd_ack_data: bytes | None = None
         # Debug: track last notification for timeout diagnostics
-        self._last_notification: Optional[bytes] = None
+        self._last_notification: bytes | None = None
         # Legacy version query (refactored to use generic mechanism, keep event for notification handler compat)
-        self._version_event: Optional[asyncio.Event] = None
-        self._version_result: Optional[tuple[int, int]] = None
+        self._version_event: asyncio.Event | None = None
+        self._version_result: tuple[int, int] | None = None
         self._version_lock = asyncio.Lock()
 
     async def connect(
         self,
-        timeout: Optional[float] = None,
-        retries: Optional[int] = None
+        timeout: float | None = None,
+        retries: int | None = None
     ) -> bool:
         """Connect to the BLE device."""
         async with self._connection_lock:
@@ -405,7 +405,7 @@ class BLEHomeController:
                                     config_entry_id=entry_id,
                                     identifiers={(DOMAIN, self.device_address)},
                                     manufacturer="BLEHome",
-                                    name=self.name or f"BLEHome Mesh Gateway",
+                                    name=self.name or "BLEHome Mesh Gateway",
                                     model="Mesh Gateway Proxy",
                                 )
                                 dev_id = device.id
@@ -449,7 +449,7 @@ class BLEHomeController:
         """Set up GATT notifications."""
         if not self.client:
             return
-            
+
         try:
             target_notify_uuid = None
             service = self.client.services.get_service(self.service_uuid)
@@ -459,7 +459,7 @@ class BLEHomeController:
                         target_notify_uuid = char.uuid
                         if char.uuid == self.char_uuid:
                             break
-            
+
             if not target_notify_uuid:
                 char = self.client.services.get_characteristic(self.char_uuid)
                 if char and "notify" in char.properties:
@@ -471,7 +471,7 @@ class BLEHomeController:
                 _LOGGER.info("Subscribed to notifications on %s", target_notify_uuid)
             else:
                 _LOGGER.warning("No notification-capable characteristic found")
-                
+
         except Exception as e:
             _LOGGER.warning("Failed to subscribe to notifications: %s", e)
 
@@ -485,7 +485,7 @@ class BLEHomeController:
             self._scan_task.cancel()
             try:
                 await asyncio.wait_for(self._scan_task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
             self._scan_task = None
 
@@ -494,7 +494,7 @@ class BLEHomeController:
             self._reconnect_task.cancel()
             try:
                 await asyncio.wait_for(self._reconnect_task, timeout=2.0)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
             self._reconnect_task = None
 
@@ -572,10 +572,10 @@ class BLEHomeController:
 
         if len(data) < 7 or data[0] != HEADER:
             return
-            
+
         address = data[1] + (data[2] << 8)
         cmd = (data[3] << 8) + data[4]
-        
+
         if cmd == BTHOME_PROXY_CMD:
             self._handle_bthome_proxy_packet(data)
             return
@@ -589,9 +589,9 @@ class BLEHomeController:
             brightness = 255
         else:
             brightness = int(round(255.0 * ((duty / 100.0) ** (1.0 / 2.2))))
-        
+
         _LOGGER.debug("Notification received: Addr=0x%04X, On=%s, Bri=%s", address, is_on, brightness)
-        
+
         if address not in self.subdevices:
             _LOGGER.info("Discovered new mesh device: 0x%04X", address)
             self.hass.async_create_task(
@@ -615,7 +615,7 @@ class BLEHomeController:
             rssi = data[5]
             if rssi > 127:
                 rssi -= 256
-                
+
             mac_bytes = data[6:12]
             mac = ":".join(f"{b:02X}" for b in mac_bytes)
             adv_len = data[12]
@@ -634,9 +634,9 @@ class BLEHomeController:
             # BTHome integration discovery relies on Service Data UUID matching OR Service UUID matching.
             # BTHome V2 usually puts 0xFCD2 in Service Data AD Type.
             # We MUST ensure that the Service UUIDs list contains the BTHome UUID so the integration matcher sees it.
-            
+
             device = BLEDevice(address=mac, name=None, details=None)
-            
+
             advertisement = AdvertisementData(
                 local_name=f"BTHome {mac.replace(':', '')[-4:]}",
                 manufacturer_data={},
@@ -649,7 +649,7 @@ class BLEHomeController:
 
             source = self.scanner.source if self.scanner else self.device_address.upper()
             service_info = BluetoothServiceInfoBleak(
-                name=f"BTHome {mac.replace(':', '')[-4:]}", 
+                name=f"BTHome {mac.replace(':', '')[-4:]}",
                 address=mac,
                 rssi=rssi,
                 tx_power=-127,
@@ -696,17 +696,17 @@ class BLEHomeController:
             "name": name,
             "state": {"on": is_on, "brightness": brightness}
         }
-        
+
         self.hass.bus.async_fire(
             f"{DOMAIN}_new_subdevice_found",
             {
                 "controller_mac": self.mac_address,
-                "address": address, 
+                "address": address,
                 "name": name,
                 "state": self.subdevices[address]["state"]
             }
         )
-        
+
         if self.config_entry:
             new_options = dict(self.config_entry.options)
             subdevices_config = new_options.get("subdevices", {}).copy()
@@ -759,7 +759,7 @@ class BLEHomeController:
         """Retry connection with exponential backoff."""
         attempt = 0
         await asyncio.sleep(5.0)
-        
+
         while not self.connected and self.hass.is_running:
             attempt += 1
             timeout = min(self.base_timeout + (attempt * 5), 60.0)
@@ -795,14 +795,14 @@ class BLEHomeController:
                         rssi = await self.client.get_rssi()
                     except Exception:
                         pass
-                    
+
                     # 如果 client.get_rssi() 失败，尝试从 HA 蓝牙缓存获取
                     if rssi is None:
                         from homeassistant.components.bluetooth import async_last_service_info
                         service_info = async_last_service_info(self.hass, self.mac_address, connectable=True)
                         if service_info:
                             rssi = service_info.rssi
-                    
+
                     if rssi is not None:
                         _LOGGER.debug("Gateway RSSI updated: %s dBm", rssi)
                         self.hass.bus.async_fire(
@@ -908,7 +908,7 @@ class BLEHomeController:
             scanner_has_cb,
         )
 
-    def debug_inject_mock_bthome(self, mac: Optional[str] = None, temp_c: Optional[float] = None) -> None:
+    def debug_inject_mock_bthome(self, mac: str | None = None, temp_c: float | None = None) -> None:
         """Inject a mock BTHome advertisement for debugging."""
         import random
 
@@ -958,7 +958,7 @@ class BLEHomeController:
         async with self._connection_lock:
             if not self.connected or not self.client or not self.client.is_connected:
                 return False
-            
+
             try:
                 await self.client.write_gatt_char(self.char_uuid, command, response=False)
                 _LOGGER.debug("Command sent to %s: %s", self.device_address, command.hex())
@@ -1007,7 +1007,7 @@ class BLEHomeController:
             0x01 if is_on else 0x00,
             normalized_brightness,
         ])
-        
+
         success = await self.send_command(cmd_frame)
         if success and address in self.subdevices:
             self.subdevices[address]["state"] = {
@@ -1020,7 +1020,7 @@ class BLEHomeController:
             )
         return success
 
-    async def _send_and_wait(self, cmd_bytes: bytes, ack_byte: int, timeout: float = 30.0) -> Optional[bytes]:
+    async def _send_and_wait(self, cmd_bytes: bytes, ack_byte: int, timeout: float = 30.0) -> bytes | None:
         """Send command bytes and wait for a matching ACK byte.
 
         Uses _cmd_lock to serialize command/ACK exchanges.
@@ -1040,14 +1040,14 @@ class BLEHomeController:
             try:
                 await asyncio.wait_for(self._cmd_event.wait(), timeout=timeout)
                 return self._cmd_ack_data
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return None
             finally:
                 self._cmd_event = None
                 self._cmd_ack_byte = None
                 self._cmd_ack_data = None
 
-    async def async_query_version(self, address: int) -> Optional[tuple[int, int]]:
+    async def async_query_version(self, address: int) -> tuple[int, int] | None:
         """Query firmware version from a mesh sub-device.
 
         Returns (major, minor) or None if device doesn't respond (old firmware).
@@ -1085,7 +1085,7 @@ class BLEHomeController:
             self._update_subdevice_version_registry(addr, ver)
             await asyncio.sleep(0.5)
 
-    def _update_subdevice_version_registry(self, address: int, version: Optional[tuple[int, int]]) -> None:
+    def _update_subdevice_version_registry(self, address: int, version: tuple[int, int] | None) -> None:
         """Update or clear device registry sw_version for a sub-device."""
         dr_registry = dr.async_get(self.hass)
         device_id = (DOMAIN, f"{self.mac_address}_{address:04X}")
@@ -1099,7 +1099,7 @@ class BLEHomeController:
     # --- OTA Update ---
 
     @staticmethod
-    def _parse_ota_firmware(filepath: str) -> Optional[tuple[bytes, int]]:
+    def _parse_ota_firmware(filepath: str) -> tuple[bytes, int] | None:
         """Parse .bin or .hex firmware file.
 
         Returns (firmware_bytes, start_address) or None on error.
@@ -1117,11 +1117,11 @@ class BLEHomeController:
             else:
                 _LOGGER.error("Unsupported firmware file: %s (use .bin or .hex)", filepath)
                 return None
-        except (IOError, OSError, ValueError) as e:
+        except (OSError, ValueError) as e:
             _LOGGER.error("Failed to parse firmware file %s: %s", filepath, e)
             return None
 
-    async def async_ota_query_image_info(self, node_address: int) -> Optional[dict[str, Any]]:
+    async def async_ota_query_image_info(self, node_address: int) -> dict[str, Any] | None:
         """Query OTA image info from a node.
 
         Sends CMD_IMAGE_INFO (0xA6) + address.
@@ -1145,13 +1145,14 @@ class BLEHomeController:
             "status_code": ack[11],
         }
 
-    async def _download_firmware(self, url: str) -> Optional[str]:
+    async def _download_firmware(self, url: str) -> str | None:
         """Download firmware from HTTP/HTTPS URL to a temporary file.
 
         Returns the temp file path, or None on failure.
         """
-        import aiohttp
         import tempfile
+
+        import aiohttp
 
         _LOGGER.info("OTA: downloading firmware from %s", url)
         try:
@@ -1173,7 +1174,7 @@ class BLEHomeController:
                     tmp.close()
                     _LOGGER.info("OTA: downloaded %d bytes to %s", len(data), tmp_path)
                     return tmp_path
-        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as e:
+        except (TimeoutError, aiohttp.ClientError, OSError) as e:
             _LOGGER.error("OTA: failed to download firmware: %s", e)
             return None
 
@@ -1296,8 +1297,8 @@ class BLEHomeController:
             f"状态: 设备就绪，开始写入...", _notify_id)
 
         # 3. Determine packet parameters based on BLE MTU
-        ADDRESS_BASE = 8
-        FRAME_HEAD = 5
+        address_base = 8
+        frame_head = 5
 
         # On BlueZ, client.mtu_size often returns 23 (default) even on modern
         # adapters because MTU negotiation happens during the HA-managed connection,
@@ -1308,9 +1309,9 @@ class BLEHomeController:
 
         # Calculate max frame size: cap at 221, align data to 8-byte boundary
         frame_max = min(221, mtu - 3)
-        align = (frame_max - FRAME_HEAD) // ADDRESS_BASE
-        frame_max_len = align * ADDRESS_BASE + FRAME_HEAD
-        max_data_len = frame_max_len - FRAME_HEAD
+        align = (frame_max - frame_head) // address_base
+        frame_max_len = align * address_base + frame_head
+        max_data_len = frame_max_len - frame_head
         if max_data_len < 8:
             max_data_len = 8
         total_chunks = (total + max_data_len - 1) // max_data_len
@@ -1329,7 +1330,7 @@ class BLEHomeController:
                 return result
 
             data_len = min(max_data_len, total - offset)
-            flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+            flash_addr = start_addr // address_base + offset // address_base
 
             # Build UPDATE command: [0xA7, addrL, addrH, flashL, flashH, data...]
             cmd = bytearray()
@@ -1361,7 +1362,7 @@ class BLEHomeController:
                 return result
             if len(ack) < 6 or ack[5] != 0:
                 status = ack[5] if len(ack) >= 6 else "N/A"
-                flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+                flash_addr = start_addr // address_base + offset // address_base
                 _LOGGER.error("OTA UPDATE fail at offset %d (flash_addr=0x%04X), status=%s",
                               offset, flash_addr, status)
                 result["message"] = f"OTA UPDATE fail at offset {offset}/{total}, status={status}"
@@ -1412,7 +1413,7 @@ class BLEHomeController:
                 break
 
             data_len = min(max_data_len, total - offset)
-            flash_addr = start_addr // ADDRESS_BASE + offset // ADDRESS_BASE
+            flash_addr = start_addr // address_base + offset // address_base
 
             cmd = bytearray()
             cmd.append(0xA8)

@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  release:
+    types: [published]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Run ruff check
+        run: ruff check custom_components/blehome/
+
+  validate-hacs:
+    name: HACS Validation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: HACS Action
+        uses: hacs/action@main
+        with:
+          category: integration
+
+  validate-hassfest:
+    name: Hassfest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Hassfest
+        uses: home-assistant/actions/hassfest@master
+
+  validate-json:
+    name: Validate JSON files
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate JSON files
+        run: |
+          echo "Checking JSON files..."
+          for f in custom_components/blehome/manifest.json \
+                   custom_components/blehome/hacs.json \
+                   custom_components/blehome/translations/en.json \
+                   custom_components/blehome/translations/zh-Hans.json; do
+            if [ -f "$f" ]; then
+              python -m json.tool "$f" > /dev/null && echo "  OK: $f" || { echo "  FAIL: $f"; exit 1; }
+            fi
+          done
+
+  validate-version-consistency:
+    name: Version consistency
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check manifest version matches git tag
+        run: |
+          MANIFEST_VER=$(python -c "import json; print(json.load(open('custom_components/blehome/manifest.json'))['version'])")
+          echo "Manifest version: $MANIFEST_VER"
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [ "${{ github.event_name }}" = "release" ]; then
+            if [ "$MANIFEST_VER" != "$TAG_VER" ]; then
+              echo "FAIL: manifest.json version ($MANIFEST_VER) != release tag version ($TAG_VER)"
+              exit 1
+            fi
+            echo "OK: manifest.json version matches release tag"
+          else
+            echo "Skipping tag check (not a release event)"
+          fi

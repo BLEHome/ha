@@ -1,0 +1,39 @@
+[project]
+name = "blehome"
+version = "2.0.1"
+description = "BLEHome Home Assistant integration"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = ["custom_components"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "F",   # pyflakes
+  "I",   # isort
+  "N",   # pep8-naming
+  "W",   # pycodestyle warnings
+  "UP",  # pyupgrade
+  "YTT", # flake8-2020
+  "ASYNC", # flake8-async
+  "BLE", # flake8-blind-except
+  "RUF100", # unused noqa
+]
+ignore = [
+  "E501",      # line-too-long (handled by formatter)
+  "ASYNC109",  # timeout param name — standard in HA patterns
+  "ASYNC240",  # os.path in async — impractical for HA file checks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
+"custom_components/blehome/*.py" = ["BLE001"]  # HA patterns legitimately catch broad exceptions
+
+[tool.ruff.lint.isort]
+known-first-party = ["blehome", "custom_components.blehome"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

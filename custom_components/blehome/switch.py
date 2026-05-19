@@ -11,7 +11,7 @@ from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .ble_controller import BLEHomeController
-from .const import DOMAIN, MANUFACTURER, CONF_BTHOME_MOCK
+from .const import CONF_BTHOME_MOCK, DOMAIN, MANUFACTURER
 
 
 async def async_setup_entry(

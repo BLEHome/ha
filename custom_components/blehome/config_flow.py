@@ -1,28 +1,28 @@
 # blehome/config_flow.py
 from __future__ import annotations
 
-import os
 import asyncio
 import logging
+import os
 from typing import Any
 
 import voluptuous as vol
 from bleak import BleakClient, BleakScanner
-from homeassistant.config_entries import ConfigFlow, ConfigEntry, OptionsFlow
-from homeassistant.const import CONF_NAME, CONF_MAC
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+from homeassistant.const import CONF_MAC, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
-    DOMAIN,
+    CONF_CHAR_UUID,
+    CONF_FIRMWARE_PATH,
+    CONF_SERVICE_UUID,
+    CONF_SUBDEVICES,
+    DEFAULT_CHAR_UUID,
     DEFAULT_PREFIX,
     DEFAULT_SERVICE_UUID,
-    DEFAULT_CHAR_UUID,
-    CONF_SERVICE_UUID,
-    CONF_CHAR_UUID,
-    CONF_SUBDEVICES,
-    CONF_FIRMWARE_PATH,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -107,7 +107,7 @@ async def _provision_device(
 
             try:
                 await asyncio.wait_for(event.wait(), timeout=10.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return False, "No response from device (set network info timeout)"
 
             ack = ack_data[0]
@@ -130,7 +130,7 @@ async def _provision_device(
 
             try:
                 await asyncio.wait_for(event.wait(), timeout=30.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return False, "No ACK for provision command (timeout)"
 
             ack = ack_data[0]
@@ -349,12 +349,12 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None and "char_uuid" in user_input:
             await self.async_set_unique_id(self._selected_device.address)
             self._abort_if_unique_id_configured()
-            
+
             mac_suffix = self._selected_device.address.replace(":", "").replace("-", "")[-4:].upper()
             prefix = DEFAULT_PREFIX
             if self._selected_device.name:
                 prefix = self._selected_device.name.split()[0].split('_')[0]
-            
+
             device_name = f"{prefix} {mac_suffix}"
             return self.async_create_entry(
                 title=device_name,
@@ -379,7 +379,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                         chars.append({"uuid": char.uuid, "properties": props})
                     if chars:
                         self._device_services[service.uuid] = chars
-            
+
             # Auto-match if possible
             found_service = None
             found_char = None
@@ -391,7 +391,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                             found_char = char["uuid"]
                             break
                     break
-            
+
             if found_service and found_char:
                 return await self.async_step_select_service(
                     {"service_uuid": found_service, "char_uuid": found_char}
@@ -405,11 +405,11 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 }),
                 description_placeholders={"device": self._selected_device.address}
             )
-            
+
         except Exception as e:
             _LOGGER.error("Error getting services: %s", e)
             return self.async_show_form(
-                step_id="select_service", 
+                step_id="select_service",
                 errors={"base": "service_scan_failed"}
             )
 
@@ -419,7 +419,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
             mac = user_input[CONF_MAC].upper()
             await self.async_set_unique_id(mac)
             self._abort_if_unique_id_configured()
-            
+
             # Extract prefix from name for manual entry as well
             prefix = user_input[CONF_NAME].split()[0].lower()
             mac_suffix = mac.replace(":", "").replace("-", "")[-4:].lower()
@@ -430,7 +430,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 title=user_input[CONF_NAME],
                 data=user_input
             )
-            
+
         return self.async_show_form(
             step_id="manual",
             data_schema=vol.Schema({

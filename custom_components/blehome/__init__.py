@@ -6,24 +6,24 @@ import logging
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
-from homeassistant.helpers import device_registry as dr, entity_registry as er
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
-from .const import (
-    DOMAIN, 
-    DEFAULT_PREFIX, 
-    PLATFORMS, 
-    CONF_MAC, 
-    CONF_SERVICE_UUID, 
-    CONF_CHAR_UUID, 
-    CONF_SUBDEVICES,
-    CONF_BTHOME_MOCK,
-)
 from .ble_controller import BLEHomeController
+from .const import (
+    CONF_BTHOME_MOCK,
+    CONF_CHAR_UUID,
+    CONF_MAC,
+    CONF_SERVICE_UUID,
+    CONF_SUBDEVICES,
+    DEFAULT_PREFIX,
+    DOMAIN,
+    PLATFORMS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _SERVICES_REGISTERED_KEY = "_services_registered"
@@ -49,30 +49,30 @@ def _get_controllers(hass, entry_id=None, mac=None):
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up BLEHome from a config entry."""
     mac: str = entry.data[CONF_MAC]
-    
+
     # Update entry title if needed (e.g., BLE ABCD)
     mac_suffix = mac.replace(":", "").replace("-", "")[-4:].upper()
     current_prefix = DEFAULT_PREFIX
     if entry.title and " " in entry.title:
         current_prefix = entry.title.split()[0]
-            
+
     new_title = f"{current_prefix} {mac_suffix}"
     if entry.title != new_title:
         hass.config_entries.async_update_entry(entry, title=new_title)
-    
+
     name = entry.data.get("name", new_title)
     service_uuid: str = entry.data[CONF_SERVICE_UUID]
     char_uuid: str = entry.data[CONF_CHAR_UUID]
     device_type = entry.data.get("device_type", "blehome.tled")
     mac_suffix = entry.data.get("mac_suffix", mac.replace(":", "").replace("-", "")[-4:].lower())
-    
+
     # Create BLEHome controller instance
     controller = BLEHomeController(hass, mac, service_uuid, char_uuid)
     controller.name = name
     controller.device_type = device_type
     controller.mac_suffix = mac_suffix
     controller.config_entry = entry
-    
+
     # Load subdevices from options
     raw_subdevices: dict[str, Any] = entry.options.get(CONF_SUBDEVICES, {})
     subdevices: dict[int, Any] = {}
@@ -83,17 +83,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
              _LOGGER.warning("Ignored invalid subdevice address: %s", k)
     controller.subdevices = subdevices
     controller.bthome_mock_enabled = bool(entry.options.get(CONF_BTHOME_MOCK, False))
-    
+
     # Identify gateway's own mesh address
     if subdevices:
         # Priority for devices containing "Gateway" or "网关" in their name
         gateway_addr = next(
-            (addr for addr, info in subdevices.items() if any(kw in info["name"] for kw in ["Gateway", "网关"])), 
+            (addr for addr, info in subdevices.items() if any(kw in info["name"] for kw in ["Gateway", "网关"])),
             next(iter(subdevices))
         )
         controller.gateway_address = gateway_addr
         _LOGGER.info("Set Mesh address 0x%04X as BLEHome gateway proxy", gateway_addr)
-    
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = controller
     _LOGGER.info("BTHome integration loaded: %s", "bthome" in hass.config.components)
@@ -222,13 +222,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not connected:
         _LOGGER.warning("Failed to connect to %s at %s, will retry", name, mac)
         raise ConfigEntryNotReady(f"Could not connect to {mac}")
-    
+
     # Load platforms
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    
+
     # Register options update listener
     entry.async_on_unload(entry.add_update_listener(async_update_options))
-    
+
     return True
 
 async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -284,12 +284,12 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     controller: BLEHomeController = hass.data[DOMAIN].pop(entry.entry_id)
-    
+
     # Disconnect
     if controller.connected:
         await controller.disconnect()
-    
+
     # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    
+
     return unload_ok

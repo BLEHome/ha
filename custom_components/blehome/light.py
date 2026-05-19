@@ -14,8 +14,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN, MANUFACTURER
 from .ble_controller import BLEHomeController
+from .const import DOMAIN, MANUFACTURER
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up BLEHome light entities."""
     controller: BLEHomeController = hass.data[DOMAIN][entry.entry_id]
-    
+
     entities = [
         BLEHomeLight(controller, addr, info["name"])
         for addr, info in controller.subdevices.items()
@@ -60,7 +60,7 @@ class BLEHomeLight(LightEntity):
         self._attr_unique_id = f"{controller.mac_address}_{address}"
         self._is_on = False
         self._brightness = 0
-        
+
         if address in controller.subdevices:
             state = controller.subdevices[address]["state"]
             self._is_on = state["on"]
@@ -112,7 +112,7 @@ class BLEHomeLight(LightEntity):
             sw_ver = f"v{ver[0]}.{ver[1]}"
         return DeviceInfo(
             identifiers={(DOMAIN, f"{self.controller.mac_address}_{self.address:04X}")},
-            name=f"BLE Mesh Light",
+            name="BLE Mesh Light",
             manufacturer=MANUFACTURER,
             model=f"{self.controller.device_type}.{self.controller.mac_suffix}.light.{self.address:04x}",
             sw_version=sw_ver,
