@@ -253,7 +253,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 data_schema=vol.Schema({
                     vol.Required("device"): vol.In(device_options)
                 }),
-                description_placeholders={"count": len(self._discovered_devices)}
+                description_placeholders={"device_count": len(self._discovered_devices)}
             )
 
         except Exception as e:
@@ -522,5 +522,5 @@ class BLEHomeOptionsFlowHandler(OptionsFlow):
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema),
-            description_placeholders={"count": str(len(choices))},
+            description_placeholders={"device_count": str(len(choices))},
         )

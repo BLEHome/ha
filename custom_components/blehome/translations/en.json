@@ -3,7 +3,7 @@
     "step": {
       "scan": {
         "title": "Scanning for Devices",
-        "description": "Found {count} WCH device(s). If your device is not listed, make sure it's advertising and within range. If it still doesn't appear, try restarting Home Assistant or moving the BLE adapter closer.",
+        "description": "Found {device_count} WCH device(s). If your device is not listed, make sure it's advertising and within range. If it still doesn't appear, try restarting Home Assistant or moving the BLE adapter closer.",
         "data": {
           "device": "Select Device"
         }
@@ -35,7 +35,7 @@
       }
     },
     "error": {
-      "no_devices_found": "No BLEHome devices found within range. Make sure the device is advertising (LED blinking) and try again.",
+      "no_devices_found": "No BLEHome devices found within range. Make sure the device is advertising and try again.",
       "scan_failed": "Failed to scan for Bluetooth devices.",
       "service_scan_failed": "Failed to retrieve services from the device. The device may have gone out of range.",
       "invalid_mac": "The MAC address provided is invalid.",
@@ -57,7 +57,7 @@
     "step": {
       "init": {
         "title": "BLEHome Options",
-        "description": "Configure {count} sub-device(s). Sub-devices are discovered automatically by the gateway after provisioning.",
+        "description": "Configure {device_count} sub-device(s). Sub-devices are discovered automatically by the gateway after provisioning.",
         "data": {
           "firmware_choice": "Firmware file",
           "remove_subdevices": "Remove sub-devices"

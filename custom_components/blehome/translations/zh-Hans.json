@@ -3,7 +3,7 @@
     "step": {
       "scan": {
         "title": "正在扫描设备",
-        "description": "发现了 {count} 个 WCH 设备。如果设备未出现，请确认它在广播且在范围内。如果仍未出现，请尝试重启 Home Assistant 或将蓝牙适配器移近。",
+        "description": "发现了 {device_count} 个 WCH 设备。如果设备未出现，请确认它在广播且在范围内。如果仍未出现，请尝试重启 Home Assistant 或将蓝牙适配器移近。",
         "data": {
           "device": "选择设备"
         }
@@ -35,7 +35,7 @@
       }
     },
     "error": {
-      "no_devices_found": "范围内未发现 BLEHome 设备。请确认设备正在广播（LED闪烁）后重试。",
+      "no_devices_found": "范围内未发现 BLEHome 设备。请确认设备正在广播后重试。",
       "scan_failed": "扫描蓝牙设备失败。",
       "service_scan_failed": "无法从设备获取服务信息，设备可能已超出范围。",
       "invalid_mac": "提供的 MAC 地址无效。",
@@ -57,7 +57,7 @@
     "step": {
       "init": {
         "title": "BLEHome 选项",
-        "description": "已配置 {count} 个子设备。子设备配网后会被网关自动发现。",
+        "description": "已配置 {device_count} 个子设备。子设备配网后会被网关自动发现。",
         "data": {
           "firmware_choice": "固件文件",
           "remove_subdevices": "移除子设备"

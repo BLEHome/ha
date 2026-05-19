@@ -79,7 +79,11 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
-### v1.9.0
+### v2.0.1
+- **Fix translation placeholder conflict**: Renamed `{count}` to `{device_count}` to avoid ICU plural rule collision in HA frontend
+- **Remove misleading "LED blinking" text**: CH582 devices have no LED indicator; error message no longer references LED blinking
+
+### v2.0.0
 - **Protocol Documentation**: Added comprehensive BLE GATT protocol specification.
 - **HACS CI**: Added HACS and Hassfest validation workflows.
 - **Brand Icons**: Added `brand/` directory for HA 2026.3+ local brand proxy API.
