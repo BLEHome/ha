@@ -3,7 +3,7 @@
     "step": {
       "scan": {
         "title": "正在扫描设备",
-        "description": "发现了 {device_count} 个 WCH 设备。如果设备未出现，请确认它在广播且在范围内。如果仍未出现，请尝试重启 Home Assistant 或将蓝牙适配器移近。",
+        "description": "选择要添加为网关的设备，或选择未配网设备进行配网。如果设备未出现，请确认它在广播且在范围内。如果仍未出现，请尝试重启 Home Assistant 或将蓝牙适配器移近。",
         "data": {
           "device": "选择设备"
         }
@@ -57,7 +57,7 @@
     "step": {
       "init": {
         "title": "BLEHome 选项",
-        "description": "已配置 {device_count} 个子设备。子设备配网后会被网关自动发现。",
+        "description": "子设备配网后会被网关自动发现。",
         "data": {
           "firmware_choice": "固件文件",
           "remove_subdevices": "移除子设备"

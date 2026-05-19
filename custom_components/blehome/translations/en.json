@@ -3,7 +3,7 @@
     "step": {
       "scan": {
         "title": "Scanning for Devices",
-        "description": "Found {device_count} WCH device(s). If your device is not listed, make sure it's advertising and within range. If it still doesn't appear, try restarting Home Assistant or moving the BLE adapter closer.",
+        "description": "Select a device to add as a gateway, or choose an unprovisioned device to provision first. If your device is not listed, make sure it's advertising and within range. If it still doesn't appear, try restarting Home Assistant or moving the BLE adapter closer.",
         "data": {
           "device": "Select Device"
         }
@@ -57,7 +57,7 @@
     "step": {
       "init": {
         "title": "BLEHome Options",
-        "description": "Configure {device_count} sub-device(s). Sub-devices are discovered automatically by the gateway after provisioning.",
+        "description": "Sub-devices are discovered automatically by the gateway after provisioning.",
         "data": {
           "firmware_choice": "Firmware file",
           "remove_subdevices": "Remove sub-devices"
