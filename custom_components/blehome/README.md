@@ -79,6 +79,9 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
+### v2.0.2
+- **Fix Bluetooth stall**: The BLEHome scanner now implements `get_discovered_device_advertisement_data`. Without it, Home Assistant's scanner fallback raised `NotImplementedError` in a loop whenever a Bluetooth proxy went offline, which could make Home Assistant unresponsive
+
 ### v2.0.1
 - **Fix translation placeholder conflict**: Renamed `{count}` to `{device_count}` to avoid ICU plural rule collision in HA frontend
 - **Remove misleading "LED blinking" text**: CH582 devices have no LED indicator; error message no longer references LED blinking

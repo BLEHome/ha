@@ -76,6 +76,9 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 
 ## 更新日志
 
+### v2.0.2
+- **修复蓝牙卡死**: BLEHome 扫描器补上 `get_discovered_device_advertisement_data`。缺少它时，蓝牙代理一离线，Home Assistant 的备用扫描器查找就会反复抛出 `NotImplementedError`，可能导致 Home Assistant 无响应
+
 ### v2.0.1
 - **修复翻译占位符冲突**: `{count}` 重命名为 `{device_count}`，避免与前端 ICU 复数规则冲突导致变量不替换
 - **删除"LED闪烁"误导文案**: CH582 设备无 LED 指示灯，错误提示不再提及 LED 闪烁

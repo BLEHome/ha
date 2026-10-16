@@ -241,6 +241,12 @@ class BLEHomeScanner(BaseScanner):
         """Return a dict of discovered devices and advertisement data."""
         return self._discovered_devices
 
+    def get_discovered_device_advertisement_data(
+        self, address: str
+    ) -> tuple[Any, Any] | None:
+        """Return the advertisement data for a discovered device."""
+        return self._discovered_devices.get(address)
+
     async def async_poll(self, now: float) -> None:
         """Poll for new devices."""
         return
