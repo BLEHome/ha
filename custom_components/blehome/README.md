@@ -79,6 +79,9 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
+### v2.1.3
+- **Provisioning connection**: Provisioning and gateway setup connect through the adapter Home Assistant picks for the device and retry up to 3 times with `bleak-retry-connector`, instead of a single 15 s attempt that failed on a flaky proxy
+
 ### v2.1.2
 - **Multiple meshes**: Provisioning first asks which mesh to join: an existing gateway's mesh or a new one with this device as gateway. Network keys are remembered per gateway; the node address defaults to one above the highest address in the chosen mesh
 

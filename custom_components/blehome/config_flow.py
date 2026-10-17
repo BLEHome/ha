@@ -5,13 +5,16 @@ import asyncio
 import logging
 import os
 import secrets
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import voluptuous as vol
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient, BleakError, BleakScanner
+from homeassistant.components.bluetooth import async_ble_device_from_address
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.const import CONF_MAC, CONF_NAME
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 from homeassistant.helpers.storage import Store
@@ -39,7 +42,37 @@ _NEW_MESH = "new_mesh"
 _LOGGER = logging.getLogger(__name__)
 
 
+try:
+    from bleak_retry_connector import establish_connection
+except ImportError:
+    establish_connection = None
+
+
+@asynccontextmanager
+async def _connect(hass: HomeAssistant, address: str) -> AsyncIterator[BleakClient]:
+    """Connect through the adapter HA picks for the address, with retries.
+
+    A bare BleakClient(address) tries one adapter once; a flaky proxy then fails the flow.
+    """
+    ble_device = async_ble_device_from_address(hass, address.upper(), connectable=True)
+    if ble_device is None:
+        raise BleakError(f"{address} is not seen by any connectable Bluetooth adapter")
+    if establish_connection is not None:
+        client = await establish_connection(BleakClient, ble_device, address, max_attempts=3)
+    else:
+        client = BleakClient(ble_device)
+        await client.connect(timeout=15.0)
+    try:
+        yield client
+    finally:
+        try:
+            await client.disconnect()
+        except Exception:
+            pass
+
+
 async def _provision_device(
+    hass: HomeAssistant,
     device_address: str,
     service_uuid: str,
     char_uuid: str,
@@ -48,7 +81,7 @@ async def _provision_device(
 ) -> tuple[bool, str]:
     """Connect to an unprovisioned WCH BLE device and provision it.
 
-    Uses a standalone BleakClient (no HA dependencies beyond bleak).
+    Connects through HA's Bluetooth stack so the best connectable adapter is used.
     Returns (success, message).
     """
     if len(net_key) != 16:
@@ -57,7 +90,7 @@ async def _provision_device(
     try:
         success = False
         message = ""
-        async with BleakClient(device_address, timeout=15.0) as client:
+        async with _connect(hass, device_address) as client:
             if not client.is_connected:
                 return False, "Failed to connect to device"
 
@@ -429,6 +462,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="no_device")
 
         result = await _provision_device(
+            self.hass,
             device.address,
             DEFAULT_SERVICE_UUID,
             DEFAULT_CHAR_UUID,
@@ -482,7 +516,8 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         try:
-            async with BleakClient(self._selected_device, timeout=15.0) as client:
+            address = getattr(self._selected_device, "address", self._selected_device)
+            async with _connect(self.hass, address) as client:
                 services = client.services
                 self._device_services = {}
                 for service in services:
