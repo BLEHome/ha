@@ -49,3 +49,7 @@ STATE_REPORT_CMDS = (QUERY_CMD, CONTROL_CMD)
 FIRMWARE_MAX_IMAGE_SIZE = 512 * 1024
 FIRMWARE_MAX_FILE_SIZE = 4 * 1024 * 1024
 FIRMWARE_BIN_DIR = "custom_components/blehome/bin"
+
+# Mesh network key remembered across provisioning flows
+MESH_STORE_KEY = "blehome.mesh"
+MESH_STORE_VERSION = 1

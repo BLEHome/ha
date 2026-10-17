@@ -62,6 +62,9 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
+### v2.1.1
+- **Provisioning defaults**: The node address defaults to one above the highest known address, starting at 0x0001 (0 is rejected). The mesh network key is remembered after a successful provisioning and filled in next time; a brand-new mesh gets a random key. The key field is a password field
+
 ### v2.1.0
 - **Connection recovery**: The gateway reconnects even if the link drops while a reconnect is finishing; a late disconnect callback from an old connection no longer tears down a new one
 - **Clean unload and shutdown**: Reloading or removing an entry while the gateway is offline no longer leaves a background reconnect running; loops stop when Home Assistant stops

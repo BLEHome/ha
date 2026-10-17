@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import secrets
 from typing import Any
 
 import voluptuous as vol
@@ -13,6 +14,7 @@ from homeassistant.const import CONF_MAC, CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
+from homeassistant.helpers.storage import Store
 
 from .const import (
     CONF_CHAR_UUID,
@@ -24,6 +26,10 @@ from .const import (
     DEFAULT_SERVICE_UUID,
     DOMAIN,
     FIRMWARE_BIN_DIR,
+    MESH_ADDR_MAX,
+    MESH_ADDR_MIN,
+    MESH_STORE_KEY,
+    MESH_STORE_VERSION,
 )
 from .firmware import scan_firmware_files
 
@@ -263,6 +269,37 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
             _LOGGER.error("Error scanning for BLEHome devices: %s", e)
             return self.async_show_form(step_id="scan", errors={"base": "scan_failed"})
 
+    def _mesh_store(self) -> Store:
+        return Store(self.hass, MESH_STORE_VERSION, MESH_STORE_KEY)
+
+    def _next_node_address(self) -> int | None:
+        """Return one above the highest address known to any gateway, starting at 0x0001.
+
+        Gaps are not reused: a gap may belong to a node that is offline or unknown to HA.
+        """
+        known = [MESH_ADDR_MIN - 1]
+        for entry in self._async_current_entries():
+            for addr in entry.options.get(CONF_SUBDEVICES, {}):
+                try:
+                    known.append(int(addr))
+                except (TypeError, ValueError):
+                    continue
+        candidate = max(known) + 1
+        return candidate if candidate <= MESH_ADDR_MAX else None
+
+    async def _default_net_key(self) -> str | None:
+        """Return the remembered mesh key, a fresh one for a new mesh, or None.
+
+        With gateways already set up but no remembered key, the existing mesh key must be
+        entered once: a random key would put the device in a different mesh.
+        """
+        stored = await self._mesh_store().async_load() or {}
+        if stored.get("net_key"):
+            return stored["net_key"]
+        if not self._async_current_entries():
+            return secrets.token_hex(16)
+        return None
+
     async def async_step_provision_configure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -300,11 +337,29 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
                 self._provision_address = address
                 return await self.async_step_provision_progress()
 
+        if user_input is not None:
+            default_address = user_input["node_address"]
+            default_key = user_input["net_key"]
+        else:
+            next_address = self._next_node_address()
+            default_address = f"0x{next_address:04X}" if next_address else ""
+            default_key = await self._default_net_key()
+
+        address_field = (
+            vol.Required("node_address", default=default_address)
+            if default_address else vol.Required("node_address")
+        )
+        key_field = (
+            vol.Required("net_key", default=default_key)
+            if default_key else vol.Required("net_key")
+        )
         return self.async_show_form(
             step_id="provision_configure",
             data_schema=vol.Schema({
-                vol.Required("node_address", default="0x64"): str,
-                vol.Required("net_key"): str,
+                address_field: str,
+                key_field: selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
             }),
             errors=errors,
             description_placeholders={
@@ -329,6 +384,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if result[0]:
+            await self._mesh_store().async_save({"net_key": self._provision_net_key.hex()})
             # If a gateway already exists, just report success — sub-devices auto-discover
             if self._async_current_entries():
                 return self.async_abort(

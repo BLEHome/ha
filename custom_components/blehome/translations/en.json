@@ -27,9 +27,9 @@
       },
       "provision_configure": {
         "title": "Provision New Device",
-        "description": "Configure network settings to add this device to your mesh network.\n\nDevice: {device}",
+        "description": "Configure network settings to add this device to your mesh network.\n\nDevice: {device}\n\nThe network key must be the one your mesh already uses. It is filled in after the first successful provisioning; for a brand-new mesh a random key is generated.",
         "data": {
-          "node_address": "Node Address (e.g. 100 or 0x64)",
+          "node_address": "Node Address (1–32767, e.g. 9 or 0x0009)",
           "net_key": "Network Key (32 hex chars / 16 bytes)"
         }
       }
