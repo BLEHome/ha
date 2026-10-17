@@ -4,16 +4,16 @@ debug_status:
   fields:
     entry_id:
       name: Entry ID
-      description: Target config entry id (optional).
+      description: Target config entry id (entry_id or mac is required).
       required: false
       example: "1234567890abcdef"
       selector:
         text:
     mac:
       name: Gateway MAC
-      description: Target gateway MAC address (optional).
+      description: Target gateway MAC address (entry_id or mac is required).
       required: false
-      example: "70:19:88:C9:27:89"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
 
@@ -23,16 +23,16 @@ debug_inject_bthome:
   fields:
     entry_id:
       name: Entry ID
-      description: Target config entry id (optional).
+      description: Target config entry id (entry_id or mac is required).
       required: false
       example: "1234567890abcdef"
       selector:
         text:
     mac:
       name: Gateway MAC
-      description: Target gateway MAC address (optional).
+      description: Target gateway MAC address (entry_id or mac is required).
       required: false
-      example: "70:19:88:C9:27:89"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
     target_mac:
@@ -64,16 +64,16 @@ remove_subdevice:
   fields:
     entry_id:
       name: Entry ID
-      description: Config entry ID of the gateway (optional if mac is provided).
+      description: Config entry ID of the gateway (entry_id or mac is required).
       required: false
       example: "1234567890abcdef"
       selector:
         text:
     mac:
       name: Gateway MAC
-      description: MAC address of the gateway (optional if entry_id is provided).
+      description: MAC address of the gateway (entry_id or mac is required).
       required: false
-      example: "70:19:88:C9:27:89"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
     mesh_address:
@@ -83,28 +83,28 @@ remove_subdevice:
       selector:
         number:
           min: 1
-          max: 65535
+          max: 32767
           mode: box
 
 ota_update:
   name: OTA update
   description: >
-    Perform a firmware OTA update on a mesh node. The firmware file (.bin or .hex)
+    Perform a firmware OTA update on a mesh node (admin only). The firmware file (.bin or .hex)
     must be accessible from the Home Assistant server.
     Progress is reported via blehome_ota_progress events.
   fields:
     entry_id:
       name: Entry ID
-      description: Config entry ID of the gateway (optional if mac is provided).
+      description: Config entry ID of the gateway (entry_id or mac is required).
       required: false
       example: "1234567890abcdef"
       selector:
         text:
     mac:
       name: Gateway MAC
-      description: MAC address of the gateway (optional if entry_id is provided).
+      description: MAC address of the gateway (entry_id or mac is required).
       required: false
-      example: "70:19:88:C9:27:89"
+      example: "AA:BB:CC:DD:EE:FF"
       selector:
         text:
     node_address:
@@ -114,14 +114,15 @@ ota_update:
       selector:
         number:
           min: 1
-          max: 65535
+          max: 32767
           mode: box
     firmware_path:
       name: Firmware path
       description: >
-        Path or URL to the .bin/.hex firmware file. Supports absolute paths,
-        paths relative to the HA config directory (e.g. "www/firmware.bin"),
-        and HTTP/HTTPS URLs (e.g. "http://homeassistant.local:8123/local/firmware.bin").
+        Path or URL to the .bin/.hex firmware file. Local files must be bundled in
+        custom_components/blehome/bin/ or sit in a directory listed in
+        allowlist_external_dirs; relative paths resolve against the HA config directory.
+        HTTP/HTTPS URLs are downloaded (up to 4 MiB).
       required: true
       selector:
         text:

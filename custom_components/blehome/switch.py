@@ -31,6 +31,7 @@ class BLEHomeBthomeMockSwitch(SwitchEntity):
     _attr_translation_key = "bthome_mock"
     _attr_entity_category = EntityCategory.CONFIG
     _attr_icon = "mdi:bug"
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, controller: BLEHomeController, entry: ConfigEntry) -> None:
         """Initialize the switch."""

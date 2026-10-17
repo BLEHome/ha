@@ -23,7 +23,11 @@ from .const import (
     DEFAULT_PREFIX,
     DEFAULT_SERVICE_UUID,
     DOMAIN,
+    FIRMWARE_BIN_DIR,
 )
+from .firmware import scan_firmware_files
+
+_FIRMWARE_AUTO = "__auto__"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -207,7 +211,7 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_scan(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Scan for BLEHome devices."""
-        if user_input is not None:
+        if user_input is not None and user_input.get("device"):
             selected_mac = user_input["device"]
             self._selected_device = self._discovered_devices.get(selected_mac)
             if self._selected_device:
@@ -351,8 +355,9 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
 
             mac_suffix = self._selected_device.address.replace(":", "").replace("-", "")[-4:].upper()
             prefix = DEFAULT_PREFIX
-            if self._selected_device.name:
-                prefix = self._selected_device.name.split()[0].split('_')[0]
+            name_parts = (self._selected_device.name or "").split()
+            if name_parts:
+                prefix = name_parts[0].split('_')[0] or DEFAULT_PREFIX
 
             device_name = f"{prefix} {mac_suffix}"
             return self.async_create_entry(
@@ -450,27 +455,20 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
 class BLEHomeOptionsFlowHandler(OptionsFlow):
     """Handle BLEHome options."""
 
-    def _scan_firmware_files(self) -> list[dict[str, str]]:
-        """Scan custom_components/blehome/bin/ recursively for .bin/.hex files."""
-        files = []
-        bin_dir = self.hass.config.path("custom_components/blehome/bin")
-        if os.path.isdir(bin_dir):
-            for root, _dirs, filenames in os.walk(bin_dir):
-                for f in sorted(filenames):
-                    if f.lower().endswith((".bin", ".hex")):
-                        full_path = os.path.join(root, f)
-                        rel_path = os.path.relpath(full_path, bin_dir)
-                        files.append({"value": full_path, "label": rel_path})
-        return files
+    async def _scan_firmware_files(self) -> list[dict[str, str]]:
+        """Scan custom_components/blehome/bin/ for .bin/.hex files, oldest version first."""
+        bin_dir = self.hass.config.path(FIRMWARE_BIN_DIR)
+        paths = await self.hass.async_add_executor_job(scan_firmware_files, bin_dir)
+        return [{"value": p, "label": os.path.relpath(p, bin_dir)} for p in paths]
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options - firmware path and sub-devices."""
         if user_input is not None:
             new_options = dict(self.config_entry.options)
 
-            # Save selected firmware file path
-            fw_choice = user_input.get("firmware_choice", "")
-            new_options[CONF_FIRMWARE_PATH] = fw_choice
+            # Save selected firmware file path; "auto" stores nothing so OTA uses the latest bundled file
+            fw_choice = user_input.get("firmware_choice", _FIRMWARE_AUTO)
+            new_options[CONF_FIRMWARE_PATH] = "" if fw_choice == _FIRMWARE_AUTO else fw_choice
 
             # Handle removed sub-devices
             removed = set(user_input.get("remove_subdevices", []))
@@ -484,20 +482,22 @@ class BLEHomeOptionsFlowHandler(OptionsFlow):
 
         subdevices = self.config_entry.options.get(CONF_SUBDEVICES, {})
         current_fw = self.config_entry.options.get(CONF_FIRMWARE_PATH, "")
-        firmware_files = self._scan_firmware_files()
+        firmware_files = await self._scan_firmware_files()
 
         schema: dict = {}
 
-        # Show firmware file picker
+        # Show firmware file picker; "auto" follows the newest bundled file across updates
         fw_options = []
-        default_fw = "__none__"
-        for f in sorted(firmware_files, key=lambda x: x["label"]):
+        default_fw = _FIRMWARE_AUTO
+        if firmware_files:
+            fw_options.append({
+                "value": _FIRMWARE_AUTO,
+                "label": f"Auto ({firmware_files[-1]['label']})",
+            })
+        for f in firmware_files:
             fw_options.append({"value": f["value"], "label": f["label"]})
-            if os.path.normpath(current_fw) == os.path.normpath(f["value"]):
+            if current_fw and os.path.normpath(current_fw) == os.path.normpath(f["value"]):
                 default_fw = f["value"]
-        # Auto-select latest firmware if none configured
-        if default_fw == "__none__" and fw_options:
-            default_fw = fw_options[-1]["value"]
         if fw_options:
             schema[vol.Required("firmware_choice", default=default_fw)] = selector.SelectSelector(
                 selector.SelectSelectorConfig(options=fw_options),

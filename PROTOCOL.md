@@ -100,8 +100,10 @@ A5 [addrL] [addrH] 82 02 [on] [duty]
 ### 4.4 State Notification (Device → HA)
 
 ```
-A5 [addrL] [addrH] 82 [01|03] [on] [duty]
+A5 [addrL] [addrH] 82 [01|02] [on] [duty]
 ```
+
+Nodes report with `82 02` (the control opcode). Only unicast addresses `0x0001`–`0x7FFF` are accepted; other `A5` frames are ignored.
 
 HA applies inverse gamma 2.2:
 ```
@@ -135,7 +137,7 @@ ACK:   8B [addrL] [addrH] [maj] [min] [status]
 - 6 bytes fixed length
 - `maj` = version major, `min` = version minor
 - `status` = `0x00` on success
-- Timeout: 5.0 seconds (silent skip on older devices)
+- Timeout: 8.0 seconds (silent skip on older devices)
 
 ---
 
@@ -193,7 +195,7 @@ Send:  A8 [addrL] [addrH] [flashAddrL] [flashAddrH] [data...]
 ACK:   88 [addrL] [addrH] [flashAddrL] [flashAddrH] [status]
 ```
 
-Same structure and timing as UPDATE. Best-effort — proceeds to END on failure.
+Same structure and timing as UPDATE. A status other than `0x00` means the flash differs from the image: the update stops and END is not sent. A verify timeout is best effort and still proceeds to END.
 
 ### Phase 4: Finalize (END)
 
@@ -210,7 +212,7 @@ No ACK expected. Followed by 1.0 s delay and notification re-subscription.
 | Device | Address |
 |--------|---------|
 | Gateway | `0x0001` (default) |
-| Sub-devices | `0x0001` – `0xFFFF` (16-bit) |
+| Sub-devices | `0x0001` – `0x7FFF` (unicast) |
 
 Sub-devices are auto-discovered when a notification arrives from an unknown address, firing a `blehome_new_subdevice_found` event.
 

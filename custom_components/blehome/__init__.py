@@ -5,15 +5,22 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import Event, HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryNotReady, ServiceValidationError
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.service import async_register_admin_service
 
-from .ble_controller import BLEHomeController
+from .ble_controller import BLEHomeController, async_get_registry_device
+
+try:
+    # HA validates service data with probatio from 2026.10; mixing libraries breaks error mapping
+    import probatio as vol
+except ImportError:
+    import voluptuous as vol
 from .const import (
     CONF_BTHOME_MOCK,
     CONF_CHAR_UUID,
@@ -22,6 +29,8 @@ from .const import (
     CONF_SUBDEVICES,
     DEFAULT_PREFIX,
     DOMAIN,
+    MESH_ADDR_MAX,
+    MESH_ADDR_MIN,
     PLATFORMS,
 )
 
@@ -31,6 +40,22 @@ SERVICE_DEBUG_STATUS = "debug_status"
 SERVICE_DEBUG_INJECT = "debug_inject_bthome"
 SERVICE_REMOVE_SUBDEVICE = "remove_subdevice"
 SERVICE_OTA_UPDATE = "ota_update"
+_SERVICES = (SERVICE_DEBUG_STATUS, SERVICE_DEBUG_INJECT, SERVICE_REMOVE_SUBDEVICE, SERVICE_OTA_UPDATE)
+
+_NON_EMPTY = vol.All(cv.string, vol.Length(min=1))
+_GATEWAY_TARGET = {
+    vol.Optional("entry_id"): _NON_EMPTY,
+    vol.Optional("mac"): _NON_EMPTY,
+}
+_MESH_ADDRESS = vol.All(vol.Coerce(int), vol.Range(min=MESH_ADDR_MIN, max=MESH_ADDR_MAX))
+
+
+def _target_schema(fields: dict) -> vol.All:
+    """Service schema that requires entry_id or mac, so a call never hits every gateway."""
+    return vol.All(
+        vol.Schema({**_GATEWAY_TARGET, **fields}),
+        cv.has_at_least_one_key("entry_id", "mac"),
+    )
 
 
 def _get_controllers(hass, entry_id=None, mac=None):
@@ -43,6 +68,16 @@ def _get_controllers(hass, entry_id=None, mac=None):
         return [hass.data[DOMAIN].get(entry_id)] if entry_id in hass.data[DOMAIN] else []
     if mac:
         return [c for c in controllers if c.mac_address.upper() == mac.upper()]
+    return controllers
+
+
+def _require_controllers(hass, call: ServiceCall) -> list[BLEHomeController]:
+    """Resolve the target gateways of a service call or raise."""
+    controllers = [
+        c for c in _get_controllers(hass, call.data.get("entry_id"), call.data.get("mac")) if c
+    ]
+    if not controllers:
+        raise ServiceValidationError("No BLEHome gateway matches the given entry_id or mac")
     return controllers
 
 
@@ -102,71 +137,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not hass.data[DOMAIN].get(_SERVICES_REGISTERED_KEY):
         hass.data[DOMAIN][_SERVICES_REGISTERED_KEY] = True
 
-        async def _handle_debug_status(call) -> None:
-            entry_id = call.data.get("entry_id")
-            mac = call.data.get("mac")
-            controllers = _get_controllers(hass, entry_id, mac)
+        async def _handle_debug_status(call: ServiceCall) -> None:
+            for c in _require_controllers(hass, call):
+                c.debug_dump_bluetooth_state()
 
-            for c in controllers:
-                if c:
-                    c.debug_dump_bluetooth_state()
+        async def _handle_debug_inject(call: ServiceCall) -> None:
+            for c in _require_controllers(hass, call):
+                c.debug_dump_bluetooth_state()
+                c.debug_inject_mock_bthome(
+                    mac=call.data.get("target_mac"), temp_c=call.data.get("temperature")
+                )
 
-        async def _handle_debug_inject(call) -> None:
-            entry_id = call.data.get("entry_id")
-            mac = call.data.get("mac")
-            temp_c = call.data.get("temperature")
-            target_mac = call.data.get("target_mac")
-            controllers = _get_controllers(hass, entry_id, mac)
-
-            for c in controllers:
-                if c:
-                    c.debug_dump_bluetooth_state()
-                    c.debug_inject_mock_bthome(mac=target_mac, temp_c=temp_c)
-
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_DEBUG_STATUS,
-            _handle_debug_status,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Optional("mac"): str,
-            }),
-        )
-
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_DEBUG_INJECT,
-            _handle_debug_inject,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Optional("mac"): str,
-                vol.Optional("target_mac"): str,
-                vol.Optional("temperature"): vol.Coerce(float),
-            }),
-        )
-
-        async def _handle_remove_subdevice(call) -> None:
-            """Remove a sub-device from the gateway and clean up registries."""
-            entry_id = call.data.get("entry_id")
-            mac = call.data.get("mac")
-            mesh_address = call.data.get("mesh_address")
-
-            controllers = _get_controllers(hass, entry_id, mac)
-
-            for controller in controllers:
-                if not controller:
-                    continue
+        async def _handle_remove_subdevice(call: ServiceCall) -> None:
+            """Remove a sub-device; the options listener unprovisions it and cleans registries."""
+            mesh_address = call.data["mesh_address"]
+            for controller in _require_controllers(hass, call):
                 if mesh_address not in controller.subdevices:
-                    _LOGGER.warning(
-                        "Sub-device 0x%04X not found for %s",
-                        mesh_address, controller.mac_address
+                    raise ServiceValidationError(
+                        f"Sub-device 0x{mesh_address:04X} not found on {controller.mac_address}"
                     )
-                    continue
-
-                # Try to unprovision the device via mesh first
-                _LOGGER.info("Sending delete command to 0x%04X...", mesh_address)
-                await controller.async_delete_node(mesh_address)
-
                 entry = controller.config_entry
                 new_options = dict(entry.options)
                 subdevices_config = new_options.get(CONF_SUBDEVICES, {}).copy()
@@ -178,53 +167,58 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     mesh_address, controller.mac_address
                 )
 
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_REMOVE_SUBDEVICE,
-            _handle_remove_subdevice,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Optional("mac"): str,
-                vol.Required("mesh_address"): vol.Coerce(int),
-            }),
-        )
-
-        async def _handle_ota_update(call) -> None:
+        async def _handle_ota_update(call: ServiceCall) -> None:
             """Perform OTA firmware update on a mesh node."""
-            entry_id = call.data.get("entry_id")
-            mac = call.data.get("mac")
-            node_address = call.data.get("node_address")
-            firmware_path = call.data.get("firmware_path")
-
-            controllers = _get_controllers(hass, entry_id, mac)
-
-            for controller in controllers:
-                if not controller:
-                    continue
+            node_address = call.data["node_address"]
+            firmware_path = call.data["firmware_path"]
+            for controller in _require_controllers(hass, call):
                 result = await controller.async_ota_update_node(node_address, firmware_path)
                 _LOGGER.info("OTA result for 0x%04X: %s - %s",
                              node_address, result["success"], result["message"])
 
-        hass.services.async_register(
-            DOMAIN,
-            SERVICE_OTA_UPDATE,
-            _handle_ota_update,
-            schema=vol.Schema({
-                vol.Optional("entry_id"): str,
-                vol.Optional("mac"): str,
-                vol.Required("node_address"): vol.Coerce(int),
-                vol.Required("firmware_path"): str,
+        async_register_admin_service(
+            hass, DOMAIN, SERVICE_DEBUG_STATUS, _handle_debug_status,
+            schema=_target_schema({}),
+        )
+        async_register_admin_service(
+            hass, DOMAIN, SERVICE_DEBUG_INJECT, _handle_debug_inject,
+            schema=_target_schema({
+                vol.Optional("target_mac"): cv.string,
+                vol.Optional("temperature"): vol.Coerce(float),
+            }),
+        )
+        async_register_admin_service(
+            hass, DOMAIN, SERVICE_REMOVE_SUBDEVICE, _handle_remove_subdevice,
+            schema=_target_schema({vol.Required("mesh_address"): _MESH_ADDRESS}),
+        )
+        async_register_admin_service(
+            hass, DOMAIN, SERVICE_OTA_UPDATE, _handle_ota_update,
+            schema=_target_schema({
+                vol.Required("node_address"): _MESH_ADDRESS,
+                vol.Required("firmware_path"): cv.string,
             }),
         )
 
-    # Connect to device
-    connected = await controller.connect()
+    # Connect once; HA retries setup with backoff, so a missing gateway does not hold startup
+    connected = await controller.connect(retries=1)
     if not connected:
         _LOGGER.warning("Failed to connect to %s at %s, will retry", name, mac)
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await controller.async_shutdown()
         raise ConfigEntryNotReady(f"Could not connect to {mac}")
 
+    async def _async_stop(_event: Event) -> None:
+        await controller.async_shutdown()
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop))
+
     # Load platforms
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await controller.async_shutdown()
+        raise
 
     # Register options update listener
     entry.async_on_unload(entry.add_update_listener(async_update_options))
@@ -272,7 +266,7 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
             if entity_id:
                 er_registry.async_remove(entity_id)
             device_identifier = (DOMAIN, f"{controller.mac_address}_{addr:04X}")
-            device = dr_registry.async_get_device(identifiers={device_identifier})
+            device = async_get_registry_device(dr_registry, device_identifier, entry.entry_id)
             if device:
                 dr_registry.async_remove_device(device.id)
                 _LOGGER.info("Cleaned up removed sub-device 0x%04X (%s)", addr, unique_id)
@@ -283,13 +277,15 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
-    controller: BLEHomeController = hass.data[DOMAIN].pop(entry.entry_id)
-
-    # Disconnect
-    if controller.connected:
-        await controller.disconnect()
-
-    # Unload platforms
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    # Always shut the controller down: its reconnect loop may still run while offline
+    controller: BLEHomeController = hass.data[DOMAIN].pop(entry.entry_id)
+    await controller.async_shutdown()
+
+    if not any(k != _SERVICES_REGISTERED_KEY for k in hass.data[DOMAIN]):
+        for service in _SERVICES:
+            hass.services.async_remove(DOMAIN, service)
+        hass.data[DOMAIN].pop(_SERVICES_REGISTERED_KEY, None)
 
     return unload_ok

@@ -8,7 +8,7 @@ from homeassistant.components.text import TextEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .ble_controller import BLEHomeController
@@ -32,6 +32,9 @@ class BLEHomeDebugWrite(TextEntity):
     _attr_translation_key = "debug_write"
     _attr_pattern = "^[0-9a-fA-F]*$"
     _attr_icon = "mdi:console"
+    # Raw frames reach every mesh node; keep it off unless someone enables it for debugging
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, controller: BLEHomeController) -> None:
         """Initialize the text entity."""

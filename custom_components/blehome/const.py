@@ -37,3 +37,15 @@ CONF_FIRMWARE_PATH = "firmware_path"
 # Mesh protocol commands
 CMD_DELETE_NODE = 0xA2
 CMD_DELETE_NODE_ACK = 0x82
+
+# Mesh unicast address range; group and broadcast addresses are rejected
+MESH_ADDR_MIN = 0x0001
+MESH_ADDR_MAX = 0x7FFF
+
+# Commands that carry a sub-device state report
+STATE_REPORT_CMDS = (QUERY_CMD, CONTROL_CMD)
+
+# OTA firmware limits
+FIRMWARE_MAX_IMAGE_SIZE = 512 * 1024
+FIRMWARE_MAX_FILE_SIZE = 4 * 1024 * 1024
+FIRMWARE_BIN_DIR = "custom_components/blehome/bin"

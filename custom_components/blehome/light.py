@@ -11,6 +11,8 @@ from homeassistant.components.light import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
@@ -81,7 +83,8 @@ class BLEHomeLight(LightEntity):
 
     @callback
     def _handle_state_update(self, event: Any) -> None:
-        if event.data.get("address") == self.address:
+        if (event.data.get("controller_mac") == self.controller.mac_address
+                and event.data.get("address") == self.address):
             state = event.data["state"]
             self._is_on = state["on"]
             self._brightness = state["brightness"]
@@ -110,23 +113,36 @@ class BLEHomeLight(LightEntity):
         if info and "version" in info:
             ver = info["version"]
             sw_ver = f"v{ver[0]}.{ver[1]}"
-        return DeviceInfo(
+        info = DeviceInfo(
             identifiers={(DOMAIN, f"{self.controller.mac_address}_{self.address:04X}")},
             name="BLE Mesh Light",
             manufacturer=MANUFACTURER,
             model=f"{self.controller.device_type}.{self.controller.mac_suffix}.light.{self.address:04x}",
             sw_version=sw_ver,
-            via_device=(DOMAIN, self.controller.mac_address),
         )
+        # via_device is deprecated from HA 2026.8 (removed in 2027.8); link by device id there
+        registry = dr.async_get(self.controller.hass)
+        entry = self.controller.config_entry
+        if entry and hasattr(registry, "async_get_device_by_identifier"):
+            gateway = registry.async_get_device_by_identifier(
+                (DOMAIN, self.controller.mac_address), entry.entry_id
+            )
+            if gateway:
+                info["via_device_id"] = gateway.id
+        else:
+            info["via_device"] = (DOMAIN, self.controller.mac_address)
+        return info
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         brightness = kwargs.get(ATTR_BRIGHTNESS, self._brightness or 255)
-        if await self.controller.send_control_command(self.address, True, brightness):
-            self._is_on = True
-            self._brightness = brightness
-            self.async_write_ha_state()
+        if not await self.controller.send_control_command(self.address, True, brightness):
+            raise HomeAssistantError(f"BLEHome gateway {self.controller.mac_address} is not reachable")
+        self._is_on = True
+        self._brightness = brightness
+        self.async_write_ha_state()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        if await self.controller.send_control_command(self.address, False, self._brightness):
-            self._is_on = False
-            self.async_write_ha_state()
+        if not await self.controller.send_control_command(self.address, False, self._brightness):
+            raise HomeAssistantError(f"BLEHome gateway {self.controller.mac_address} is not reachable")
+        self._is_on = False
+        self.async_write_ha_state()

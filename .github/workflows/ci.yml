@@ -29,7 +29,25 @@ jobs:
         run: pip install ruff
 
       - name: Run ruff check
-        run: ruff check custom_components/blehome/
+        run: ruff check custom_components/blehome/ tests/
+
+  tests:
+    name: Tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install test requirements
+        run: pip install -r tests/requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q tests
 
   validate-hacs:
     name: HACS Validation
@@ -64,12 +82,11 @@ jobs:
         run: |
           echo "Checking JSON files..."
           for f in custom_components/blehome/manifest.json \
-                   custom_components/blehome/hacs.json \
+                   hacs.json \
                    custom_components/blehome/translations/en.json \
                    custom_components/blehome/translations/zh-Hans.json; do
-            if [ -f "$f" ]; then
-              python -m json.tool "$f" > /dev/null && echo "  OK: $f" || { echo "  FAIL: $f"; exit 1; }
-            fi
+            [ -f "$f" ] || { echo "  MISSING: $f"; exit 1; }
+            python -m json.tool "$f" > /dev/null && echo "  OK: $f" || { echo "  FAIL: $f"; exit 1; }
           done
 
   validate-version-consistency:

@@ -8,14 +8,17 @@ from typing import Any
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .ble_controller import BLEHomeController
 from .const import (
     CONF_FIRMWARE_PATH,
     DOMAIN,
+    FIRMWARE_BIN_DIR,
 )
+from .firmware import scan_firmware_files
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -56,6 +59,7 @@ class BLEHomeOTAButton(ButtonEntity):
     _attr_has_entity_name = True
     _attr_translation_key = "ota_update"
     _attr_icon = "mdi:cellphone-arrow-down"
+    _attr_entity_category = EntityCategory.CONFIG
 
     def __init__(self, controller: BLEHomeController, address: int) -> None:
         """Initialize the button."""
@@ -82,26 +86,23 @@ class BLEHomeOTAButton(ButtonEntity):
             _LOGGER.error("No config entry for controller")
             return
 
+        hass = self.controller.hass
         firmware_path = entry.options.get(CONF_FIRMWARE_PATH, "")
+        if firmware_path and not await hass.async_add_executor_job(os.path.isfile, firmware_path):
+            _LOGGER.warning("Configured firmware %s no longer exists, using the latest bundled one", firmware_path)
+            firmware_path = ""
         if not firmware_path:
             # Auto-detect highest version firmware in bin/ directory
-            bin_dir = self.controller.hass.config.path("custom_components/blehome/bin")
-            found = []
-            if os.path.isdir(bin_dir):
-                for root, _dirs, filenames in os.walk(bin_dir):
-                    for f in sorted(filenames, reverse=True):
-                        if f.lower().endswith((".bin", ".hex")):
-                            found.append(os.path.join(root, f))
-            if found:
-                firmware_path = found[0]
-                _LOGGER.info("Auto-selected firmware: %s", firmware_path)
-            else:
-                _LOGGER.error(
-                    "Firmware path not configured and no firmware files found "
-                    "in custom_components/blehome/bin/. "
-                    "Place a .bin/.hex file there or set firmware path in gateway options."
+            found = await hass.async_add_executor_job(
+                scan_firmware_files, hass.config.path(FIRMWARE_BIN_DIR)
+            )
+            if not found:
+                raise HomeAssistantError(
+                    "No firmware file in custom_components/blehome/bin/; "
+                    "place a .bin/.hex file there or set one in the gateway options"
                 )
-                return
+            firmware_path = found[-1]
+            _LOGGER.info("Auto-selected firmware: %s", firmware_path)
 
         _LOGGER.info(
             "Starting OTA update for 0x%04X with firmware: %s",
@@ -112,13 +113,9 @@ class BLEHomeOTAButton(ButtonEntity):
             self._address, firmware_path
         )
 
-        if result["success"]:
-            _LOGGER.info(
-                "OTA update successful for 0x%04X: %s",
-                self._address, result["message"],
-            )
-        else:
-            _LOGGER.error(
-                "OTA update failed for 0x%04X: %s",
-                self._address, result["message"],
-            )
+        if not result["success"]:
+            raise HomeAssistantError(f"OTA update failed for 0x{self._address:04X}: {result['message']}")
+        _LOGGER.info(
+            "OTA update successful for 0x%04X: %s",
+            self._address, result["message"],
+        )

@@ -4,7 +4,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import Callable
+import tempfile
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 from bleak import AdvertisementData, BleakClient, BleakError, BLEDevice
@@ -12,6 +13,11 @@ from homeassistant.components.bluetooth import (
     BluetoothServiceInfoBleak,
     async_ble_device_from_address,
 )
+
+try:
+    from bleak_retry_connector import establish_connection
+except ImportError:
+    establish_connection = None
 
 # --- 核心修复：精准导入最新的蓝牙基类以通过类型检查 ---
 try:
@@ -32,6 +38,7 @@ except ImportError:
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import (
     BTHOME_PROXY_CMD,
@@ -39,18 +46,41 @@ from .const import (
     CMD_DELETE_NODE_ACK,
     CONTROL_CMD,
     DOMAIN,
+    FIRMWARE_BIN_DIR,
+    FIRMWARE_MAX_FILE_SIZE,
+    FIRMWARE_MAX_IMAGE_SIZE,
     HEADER,
+    MESH_ADDR_MAX,
+    MESH_ADDR_MIN,
     QUERY_CMD,
+    STATE_REPORT_CMDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Scanner cache cap; relayed BTHome devices beyond this evict the oldest entry
+_SCANNER_CACHE_MAX = 512
+_WRITE_TIMEOUT = 10.0
+
+
+def async_get_registry_device(
+    registry: dr.DeviceRegistry, identifier: tuple[str, str], config_entry_id: str | None
+) -> dr.DeviceEntry | None:
+    """Look up a device by identifier.
+
+    async_get_device_by_identifier exists from HA 2026.8; older cores use async_get_device.
+    """
+    if config_entry_id and hasattr(registry, "async_get_device_by_identifier"):
+        return registry.async_get_device_by_identifier(identifier, config_entry_id)
+    return registry.async_get_device(identifiers={identifier})
 
 
 def _parse_hex_file(filepath: str) -> tuple[bytes, int] | None:
     """Parse an Intel HEX file into contiguous bytes.
 
     Returns (data_bytes, min_address) or None on error.
-    Handles record types 0x00, 0x01, 0x02, 0x04.
+    Handles record types 0x00, 0x01, 0x02, 0x04 and verifies record checksums.
+    Raises ValueError on malformed records or an image larger than FIRMWARE_MAX_IMAGE_SIZE.
     """
     elements: list[tuple[int, bytes]] = []
     upper_addr = 0
@@ -71,7 +101,11 @@ def _parse_hex_file(filepath: str) -> tuple[bytes, int] | None:
         if not line or not line.startswith(':'):
             continue
 
-        byte_count = int(line[1:3], 16)
+        record = bytes.fromhex(line[1:])
+        if len(record) < 5 or len(record) != record[0] + 5 or sum(record) & 0xFF:
+            raise ValueError(f"Bad HEX record: {line[:16]}")
+
+        byte_count = record[0]
         address = int(line[3:7], 16)
         record_type = int(line[7:9], 16)
         data_str = line[9:9 + byte_count * 2]
@@ -109,6 +143,8 @@ def _parse_hex_file(filepath: str) -> tuple[bytes, int] | None:
         return None
 
     buffer_size = max_addr - min_addr
+    if buffer_size > FIRMWARE_MAX_IMAGE_SIZE:
+        raise ValueError(f"HEX image spans {buffer_size} bytes, limit {FIRMWARE_MAX_IMAGE_SIZE}")
     buffer = bytearray(buffer_size)
     for addr, data in elements:
         offset = addr - min_addr
@@ -156,10 +192,14 @@ class BLEHomeScanner(BaseScanner):
 
     def inject_proxy_advertisement(self, service_info: Any) -> None:
         """Inject a proxied advertisement into the manager."""
+        # Re-insert to keep the dict ordered by last seen, then evict the oldest
+        self._discovered_devices.pop(service_info.address, None)
         self._discovered_devices[service_info.address] = (
             service_info.device,
             service_info.advertisement,
         )
+        while len(self._discovered_devices) > _SCANNER_CACHE_MAX:
+            del self._discovered_devices[next(iter(self._discovered_devices))]
         _LOGGER.debug(
             "Proxy inject: address=%s service_uuids=%s service_data_keys=%s source=%s",
             service_info.address,
@@ -296,6 +336,9 @@ class BLEHomeController:
         self.mac_suffix = ""
         self.config_entry: ConfigEntry | None = None
         self._connection_lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
+        self._ota_lock = asyncio.Lock()
+        self._closing = False  # set once by async_shutdown; stops all loops and reconnects
         self._disconnecting = False  # guard to prevent _on_disconnected from firing during cleanup/connect
         self._heartbeat_task: asyncio.Task | None = None
         self._reconnect_task: asyncio.Task | None = None
@@ -311,14 +354,54 @@ class BLEHomeController:
         # Generic command/ACK mechanism for provisioning, OTA, version queries
         self._cmd_lock = asyncio.Lock()
         self._cmd_event: asyncio.Event | None = None
-        self._cmd_ack_byte: int | None = None
+        self._cmd_ack_prefix: bytes | None = None
         self._cmd_ack_data: bytes | None = None
         # Debug: track last notification for timeout diagnostics
         self._last_notification: bytes | None = None
-        # Legacy version query (refactored to use generic mechanism, keep event for notification handler compat)
-        self._version_event: asyncio.Event | None = None
-        self._version_result: tuple[int, int] | None = None
-        self._version_lock = asyncio.Lock()
+
+    @property
+    def _running(self) -> bool:
+        """Return True while loops and reconnects may keep going."""
+        return not self._closing and not self.hass.is_stopping
+
+    def _create_task(self, coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
+        """Start a background task that is cancelled when the entry unloads."""
+        if self.config_entry:
+            return self.config_entry.async_create_background_task(self.hass, coro, name)
+        return self.hass.async_create_background_task(coro, name)
+
+    def _abort_pending_command(self) -> None:
+        """Wake a pending _send_and_wait so it returns None immediately."""
+        if self._cmd_event is not None and not self._cmd_event.is_set():
+            self._cmd_event.set()
+
+    def _handle_link_lost(self) -> None:
+        """Mark the link down, notify entities and start the reconnect loop."""
+        if self._disconnecting:
+            return
+        was_connected = self.connected
+        self.connected = False
+        self._stop_heartbeat()
+        self._abort_pending_command()
+        if was_connected:
+            self.hass.bus.async_fire(f"{DOMAIN}_availability_changed", {"connected": False})
+        if self._running and (not self._reconnect_task or self._reconnect_task.done()):
+            self._reconnect_task = self._create_task(
+                self._persistent_reconnect(), f"blehome reconnect {self.device_address}"
+            )
+
+    async def async_shutdown(self) -> None:
+        """Stop every loop and close the link. The controller is not reused afterwards."""
+        self._closing = True
+        self._abort_pending_command()
+        if self._reconnect_task and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            try:
+                await asyncio.wait_for(self._reconnect_task, timeout=5.0)
+            except (TimeoutError, asyncio.CancelledError):
+                pass
+        self._reconnect_task = None
+        await self.disconnect()
 
     async def connect(
         self,
@@ -327,6 +410,8 @@ class BLEHomeController:
     ) -> bool:
         """Connect to the BLE device."""
         async with self._connection_lock:
+            if self._closing:
+                return False
             if self.connected and self.client and self.client.is_connected:
                 return True
 
@@ -345,20 +430,28 @@ class BLEHomeController:
                     ble_device = async_ble_device_from_address(
                         self.hass, self.device_address, connectable=True
                     )
-                    if ble_device:
-                        self.client = BleakClient(ble_device)
-                        _LOGGER.debug("Connecting via HA bluetooth manager: %s", ble_device)
-                    else:
-                        self.client = BleakClient(self.device_address)
-                        _LOGGER.warning(
-                            "Device not in HA cache, attempting direct connection: %s",
-                            self.device_address
+                    if not ble_device:
+                        # HA's bleak wrapper resolves addresses from the same cache, so a
+                        # direct BleakClient(address) cannot succeed either; wait for an advert.
+                        raise BleakError(
+                            f"{self.device_address} not seen by any connectable Bluetooth adapter"
                         )
 
-                    await self.client.connect(timeout=conn_timeout)
-
-                    # Register disconnect callback immediately to avoid races
-                    self.client.set_disconnected_callback(self._on_disconnected)
+                    if establish_connection is not None:
+                        self.client = await establish_connection(
+                            BleakClient,
+                            ble_device,
+                            self.name or self.device_address,
+                            disconnected_callback=self._on_disconnected,
+                            max_attempts=2,
+                            ble_device_callback=lambda: async_ble_device_from_address(
+                                self.hass, self.device_address, connectable=True
+                            ) or ble_device,
+                        )
+                    else:
+                        self.client = BleakClient(ble_device)
+                        await self.client.connect(timeout=conn_timeout)
+                        self.client.set_disconnected_callback(self._on_disconnected)
 
                     # Double-check connection right after connect() returns
                     if not self.client.is_connected:
@@ -379,19 +472,18 @@ class BLEHomeController:
                     self.connected = True
                     self._start_heartbeat()
 
-                    # Query initial states
-                    for addr in self.subdevices:
-                        self.hass.async_create_task(self.send_query_command(addr))
-                        await asyncio.sleep(0.1)
+                    # Query initial states and firmware versions without holding the lock
+                    if self.subdevices:
+                        self._create_task(
+                            self._query_initial_state(), f"blehome initial query {self.device_address}"
+                        )
 
                     # Start periodic mesh scan loop
                     if self._scan_task and not self._scan_task.done():
                         self._scan_task.cancel()
-                    self._scan_task = self.hass.async_create_task(self._scan_loop())
-
-                    # Query firmware versions for known sub-devices (old devices silently skip)
-                    if self.subdevices:
-                        self.hass.async_create_task(self._query_all_versions())
+                    self._scan_task = self._create_task(
+                        self._scan_loop(), f"blehome mesh scan {self.device_address}"
+                    )
 
                     self.hass.bus.async_fire(
                         f"{DOMAIN}_availability_changed", {"connected": True}
@@ -451,6 +543,16 @@ class BLEHomeController:
             self.connected = False
             return False
 
+    async def _query_initial_state(self) -> None:
+        """Query each known sub-device for its state, then its firmware version."""
+        for addr in list(self.subdevices):
+            if not self.connected:
+                return
+            await self.send_query_command(addr)
+            await asyncio.sleep(0.1)
+        # Old firmware does not answer version queries; those devices are skipped
+        await self._query_all_versions()
+
     async def _setup_notifications(self) -> None:
         """Set up GATT notifications."""
         if not self.client:
@@ -484,7 +586,9 @@ class BLEHomeController:
     async def _cleanup_client(self) -> None:
         """Clean up client resources."""
         self._disconnecting = True
+        self.connected = False
         self._stop_heartbeat()
+        self._abort_pending_command()
 
         # Cancel scan task
         if self._scan_task and not self._scan_task.done():
@@ -514,10 +618,12 @@ class BLEHomeController:
                 # Stop notifications first, then disconnect
                 if self.notify_uuid:
                     try:
-                        await self.client.stop_notify(self.notify_uuid)
+                        await asyncio.wait_for(
+                            self.client.stop_notify(self.notify_uuid), timeout=_WRITE_TIMEOUT
+                        )
                     except Exception:
                         pass
-                await self.client.disconnect()
+                await asyncio.wait_for(self.client.disconnect(), timeout=_WRITE_TIMEOUT)
             except Exception as e:
                 _LOGGER.debug("Error during client cleanup: %s", e)
             finally:
@@ -539,42 +645,33 @@ class BLEHomeController:
         if self._disconnecting:
             _LOGGER.debug("Ignoring disconnect callback during intentional cleanup for %s", self.device_address)
             return
+        if self.client is not None and client is not self.client:
+            _LOGGER.debug("Ignoring late disconnect callback from a previous client for %s", self.device_address)
+            return
         if self.connected:
-            _LOGGER.debug("Disconnected unexpectedly from %s", self.device_address)
-            self.connected = False
-            self.hass.bus.async_fire(f"{DOMAIN}_availability_changed", {"connected": False})
-            self._stop_heartbeat()
-            if not self._reconnect_task or self._reconnect_task.done():
-                self._reconnect_task = self.hass.async_create_task(self._persistent_reconnect())
+            _LOGGER.info("Disconnected unexpectedly from %s", self.device_address)
+            self._handle_link_lost()
 
     def _notification_handler(self, sender: int, data: bytearray) -> None:
         """Handle notification data."""
         # Track last notification for timeout diagnostics
         self._last_notification = bytes(data)
 
-        # Handle CMD_GET_VERSION_ACK (0x8B): [cmd, addrL, addrH, ver_major, ver_minor, status]
-        if len(data) == 6 and data[0] == 0x8B and data[5] == 0x00:
-            if self._version_event and not self._version_event.is_set():
-                self._version_result = (data[3], data[4])
-                self._version_event.set()
-                return
-
-        # Generic ACK matching for provisioning, OTA, etc.
+        # ACK matching for provisioning, OTA, version queries: command byte plus the
+        # echoed node (and flash) address, so a late or foreign ACK is not taken
         if (self._cmd_event is not None
                 and not self._cmd_event.is_set()
-                and self._cmd_ack_byte is not None
-                and len(data) >= 1
-                and data[0] == self._cmd_ack_byte):
+                and self._cmd_ack_prefix is not None
+                and bytes(data[:len(self._cmd_ack_prefix)]) == self._cmd_ack_prefix):
             self._cmd_ack_data = bytes(data)
             self._cmd_event.set()
             return
 
         # Debug: log unmatched OTA-related ACKs that might indicate a routing issue
         if len(data) >= 1 and data[0] in (0x87, 0x88, 0x86):
-            _LOGGER.debug("Unmatched OTA ACK: data[0]=0x%02X len=%d cmd_event=%s cmd_ack=0x%02X",
-                          data[0], len(data),
-                                          "set" if self._cmd_event and self._cmd_event.is_set() else "none" if self._cmd_event is None else "waiting",
-                          self._cmd_ack_byte if self._cmd_ack_byte else 0)
+            _LOGGER.debug("Unmatched OTA ACK: %s (waiting for %s)",
+                          bytes(data[:6]).hex(),
+                          self._cmd_ack_prefix.hex() if self._cmd_ack_prefix else "none")
 
         if len(data) < 7 or data[0] != HEADER:
             return
@@ -584,6 +681,11 @@ class BLEHomeController:
 
         if cmd == BTHOME_PROXY_CMD:
             self._handle_bthome_proxy_packet(data)
+            return
+
+        # Only state reports from unicast addresses create or update sub-devices
+        if cmd not in STATE_REPORT_CMDS or not MESH_ADDR_MIN <= address <= MESH_ADDR_MAX:
+            _LOGGER.debug("Ignoring frame cmd=0x%04X addr=0x%04X", cmd, address)
             return
 
         is_on = data[5] != 0
@@ -608,7 +710,11 @@ class BLEHomeController:
         self.subdevices[address]["state"] = {"on": is_on, "brightness": brightness}
         self.hass.bus.async_fire(
             f"{DOMAIN}_subdevice_updated",
-            {"address": address, "state": self.subdevices[address]["state"]}
+            {
+                "controller_mac": self.mac_address,
+                "address": address,
+                "state": self.subdevices[address]["state"],
+            },
         )
 
     def _handle_bthome_proxy_packet(self, data: bytearray) -> None:
@@ -621,10 +727,18 @@ class BLEHomeController:
             rssi = data[5]
             if rssi > 127:
                 rssi -= 256
+            # A real RSSI is negative; clamp so a forged value cannot outrank other adapters
+            rssi = max(-127, min(rssi, -1))
 
-            mac_bytes = data[6:12]
+            mac_bytes = bytes(data[6:12])
+            if mac_bytes in (b"\x00" * 6, b"\xff" * 6):
+                _LOGGER.debug("Proxy packet with invalid MAC %s", mac_bytes.hex())
+                return
             mac = ":".join(f"{b:02X}" for b in mac_bytes)
             adv_len = data[12]
+            if adv_len == 0 or 13 + adv_len > len(data):
+                _LOGGER.debug("Proxy packet length mismatch: adv_len=%d frame=%d", adv_len, len(data))
+                return
             adv_payload = data[13:13+adv_len]
 
             payload_hash = hash(bytes(adv_payload))
@@ -635,7 +749,7 @@ class BLEHomeController:
                 self._bthome_dedup.clear()
             self._bthome_dedup[mac] = payload_hash
 
-            _LOGGER.info("Proxying BTHome packet from %s, RSSI: %d, Data: %s", mac, rssi, adv_payload.hex())
+            _LOGGER.debug("Proxying BTHome packet from %s, RSSI: %d, Data: %s", mac, rssi, adv_payload.hex())
 
             # BTHome integration discovery relies on Service Data UUID matching OR Service UUID matching.
             # BTHome V2 usually puts 0xFCD2 in Service Data AD Type.
@@ -748,12 +862,12 @@ class BLEHomeController:
             # First scan after short delay
             await asyncio.sleep(5.0)
             _LOGGER.info("Starting periodic mesh scan loop")
-            while self.connected and self.hass.is_running:
+            while self.connected and self._running:
                 _LOGGER.debug("Scanning mesh for new devices...")
                 await self.async_scan_mesh(20)
                 # Wait 5 minutes before next scan
                 for _ in range(300):
-                    if not self.connected or not self.hass.is_running:
+                    if not self.connected or not self._running:
                         return
                     await asyncio.sleep(1.0)
         except asyncio.CancelledError:
@@ -766,7 +880,13 @@ class BLEHomeController:
         attempt = 0
         await asyncio.sleep(5.0)
 
-        while not self.connected and self.hass.is_running:
+        while self._running:
+            # Re-check the real link every pass: it can drop again while connect() is
+            # still finishing, and that disconnect does not start a second reconnect task
+            if self.connected and self.client and self.client.is_connected:
+                _LOGGER.info("Persistent reconnect successful for %s", self.device_address)
+                return
+
             attempt += 1
             timeout = min(self.base_timeout + (attempt * 5), 60.0)
             wait_time = min(2 ** attempt, 60)
@@ -776,9 +896,8 @@ class BLEHomeController:
                 attempt, self.device_address, timeout, wait_time
             )
 
-            if await self.connect(timeout=timeout, retries=1):
-                _LOGGER.info("Persistent reconnect successful for %s", self.device_address)
-                return
+            if await self.connect(timeout=timeout, retries=1) and self.connected:
+                continue
 
             await asyncio.sleep(wait_time)
 
@@ -788,7 +907,7 @@ class BLEHomeController:
             return
 
         async def heartbeat_loop() -> None:
-            while self.connected and self.hass.is_running:
+            while self.connected and self._running:
                 try:
                     heartbeat_cmd = bytearray([HEADER, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
                     await self.send_command(heartbeat_cmd)
@@ -796,18 +915,12 @@ class BLEHomeController:
                     if self.client and self.client.is_connected and self.bthome_mock_enabled:
                         self.debug_inject_mock_bthome(mac="AA:BB:CC:DD:EE:01")
 
+                    # The gateway's RSSI comes from the adapter that last heard its advert
                     rssi = None
-                    try:
-                        rssi = await self.client.get_rssi()
-                    except Exception:
-                        pass
-
-                    # 如果 client.get_rssi() 失败，尝试从 HA 蓝牙缓存获取
-                    if rssi is None:
-                        from homeassistant.components.bluetooth import async_last_service_info
-                        service_info = async_last_service_info(self.hass, self.mac_address, connectable=True)
-                        if service_info:
-                            rssi = service_info.rssi
+                    from homeassistant.components.bluetooth import async_last_service_info
+                    service_info = async_last_service_info(self.hass, self.mac_address, connectable=True)
+                    if service_info:
+                        rssi = service_info.rssi
 
                     if rssi is not None:
                         _LOGGER.debug("Gateway RSSI updated: %s dBm", rssi)
@@ -819,15 +932,14 @@ class BLEHomeController:
                         _LOGGER.debug("Gateway RSSI unavailable via all methods for %s", self.mac_address)
                 except Exception as e:
                     _LOGGER.warning("Heartbeat failed for %s: %s", self.device_address, e)
-                    self.connected = False
-                    self._stop_heartbeat()
-                    if not self._reconnect_task or self._reconnect_task.done():
-                        self._reconnect_task = self.hass.async_create_task(self._persistent_reconnect())
+                    self._handle_link_lost()
                     break
 
                 await asyncio.sleep(self.keep_alive_interval)
 
-        self._heartbeat_task = self.hass.async_create_task(heartbeat_loop())
+        self._heartbeat_task = self._create_task(
+            heartbeat_loop(), f"blehome heartbeat {self.device_address}"
+        )
 
     def _inject_to_bluetooth_manager(self, service_info: BluetoothServiceInfoBleak) -> None:
         """Directly inject advertisement into bluetooth manager."""
@@ -866,7 +978,7 @@ class BLEHomeController:
                     name for name in dir(manager)
                     if "advert" in name.lower() or "service" in name.lower()
                 ]
-                _LOGGER.info(
+                _LOGGER.debug(
                     "Bluetooth manager type=%s methods=%s",
                     type(manager).__name__,
                     method_names,
@@ -886,7 +998,7 @@ class BLEHomeController:
                 result = method(service_info)
                 if asyncio.iscoroutine(result):
                     self.hass.async_create_task(result)
-                _LOGGER.info(
+                _LOGGER.debug(
                     "%s into bluetooth manager: %s (%s) service_data=%s",
                     label,
                     service_info.address,
@@ -960,21 +1072,29 @@ class BLEHomeController:
             self._heartbeat_task = None
 
     async def send_command(self, command: bytes) -> bool:
-        """Send a command to the device."""
-        async with self._connection_lock:
-            if not self.connected or not self.client or not self.client.is_connected:
+        """Send a command to the device.
+
+        Fails fast while the link is down instead of waiting for a reconnect to finish.
+        """
+        if not self.connected:
+            return False
+        async with self._write_lock:
+            client = self.client
+            if not self.connected or not client or not client.is_connected:
                 return False
 
             try:
-                await self.client.write_gatt_char(self.char_uuid, command, response=False)
+                await asyncio.wait_for(
+                    client.write_gatt_char(self.char_uuid, command, response=False),
+                    timeout=_WRITE_TIMEOUT,
+                )
                 _LOGGER.debug("Command sent to %s: %s", self.device_address, command.hex())
                 return True
             except Exception as e:
                 _LOGGER.error("Error sending command to %s: %s", self.device_address, e)
-                self.connected = False
-                self._stop_heartbeat()
-                if not self._reconnect_task or self._reconnect_task.done():
-                    self._reconnect_task = self.hass.async_create_task(self._persistent_reconnect())
+                # A failed write on a client that a reconnect already replaced says nothing about the new link
+                if client is self.client:
+                    self._handle_link_lost()
                 return False
 
     async def send_query_command(self, address: int) -> bool:
@@ -999,7 +1119,8 @@ class BLEHomeController:
             return 100
         fraction = brightness / 255.0
         duty = int(round(100.0 * (fraction ** 2.2)))
-        return max(0, min(100, duty))
+        # The lowest brightness levels round to duty 0, which would leave a light "on" but dark
+        return max(1, min(100, duty))
 
     async def send_control_command(self, address: int, is_on: bool, brightness: int) -> bool:
         """Send a light control command."""
@@ -1022,35 +1143,35 @@ class BLEHomeController:
             }
             self.hass.bus.async_fire(
                 f"{DOMAIN}_subdevice_updated",
-                {"address": address, "state": self.subdevices[address]["state"]}
+                {
+                    "controller_mac": self.mac_address,
+                    "address": address,
+                    "state": self.subdevices[address]["state"],
+                },
             )
         return success
 
-    async def _send_and_wait(self, cmd_bytes: bytes, ack_byte: int, timeout: float = 30.0) -> bytes | None:
-        """Send command bytes and wait for a matching ACK byte.
+    async def _send_and_wait(self, cmd_bytes: bytes, ack_prefix: bytes, timeout: float = 30.0) -> bytes | None:
+        """Send command bytes and wait for an ACK starting with ack_prefix.
 
         Uses _cmd_lock to serialize command/ACK exchanges.
-        Returns raw ACK bytes on success, None on timeout or send failure.
+        Returns raw ACK bytes on success, None on timeout, send failure or disconnect.
         """
         async with self._cmd_lock:
             self._cmd_event = asyncio.Event()
-            self._cmd_ack_byte = ack_byte
+            self._cmd_ack_prefix = ack_prefix
             self._cmd_ack_data = None
 
-            success = await self.send_command(cmd_bytes)
-            if not success:
-                self._cmd_event = None
-                self._cmd_ack_byte = None
-                return None
-
             try:
+                if not await self.send_command(cmd_bytes):
+                    return None
                 await asyncio.wait_for(self._cmd_event.wait(), timeout=timeout)
                 return self._cmd_ack_data
             except TimeoutError:
                 return None
             finally:
                 self._cmd_event = None
-                self._cmd_ack_byte = None
+                self._cmd_ack_prefix = None
                 self._cmd_ack_data = None
 
     async def async_query_version(self, address: int) -> tuple[int, int] | None:
@@ -1059,8 +1180,8 @@ class BLEHomeController:
         Returns (major, minor) or None if device doesn't respond (old firmware).
         """
         cmd = bytes([0xAB, address & 0xFF, (address >> 8) & 0xFF])
-        ack = await self._send_and_wait(cmd, 0x8B, timeout=8.0)
-        if ack is None or len(ack) < 5:
+        ack = await self._send_and_wait(cmd, bytes([0x8B, address & 0xFF, (address >> 8) & 0xFF]), timeout=8.0)
+        if ack is None or len(ack) < 5 or (len(ack) >= 6 and ack[5] != 0):
             return None
         return (ack[3], ack[4])
 
@@ -1071,7 +1192,7 @@ class BLEHomeController:
         Returns True if the device acknowledged, False on timeout/disconnect.
         """
         cmd = bytes([CMD_DELETE_NODE, address & 0xFF, (address >> 8) & 0xFF])
-        ack = await self._send_and_wait(cmd, CMD_DELETE_NODE_ACK, timeout=8.0)
+        ack = await self._send_and_wait(cmd, bytes([CMD_DELETE_NODE_ACK]), timeout=8.0)
         if ack is None:
             _LOGGER.warning("Delete node 0x%04X: no ACK (device may be offline)", address)
             return False
@@ -1095,7 +1216,9 @@ class BLEHomeController:
         """Update or clear device registry sw_version for a sub-device."""
         dr_registry = dr.async_get(self.hass)
         device_id = (DOMAIN, f"{self.mac_address}_{address:04X}")
-        device = dr_registry.async_get_device(identifiers={device_id})
+        device = async_get_registry_device(
+            dr_registry, device_id, self.config_entry.entry_id if self.config_entry else None
+        )
         if device:
             sw_ver = f"v{version[0]}.{version[1]}" if version else None
             dr_registry.async_update_device(device.id, sw_version=sw_ver)
@@ -1114,6 +1237,10 @@ class BLEHomeController:
         """
         try:
             name = os.path.basename(filepath).lower()
+            size = os.path.getsize(filepath)
+            limit = FIRMWARE_MAX_IMAGE_SIZE if name.endswith('.bin') else FIRMWARE_MAX_FILE_SIZE
+            if size > limit:
+                raise ValueError(f"file is {size} bytes, limit {limit}")
             if name.endswith('.bin'):
                 with open(filepath, 'rb') as f:
                     data = f.read()
@@ -1135,7 +1262,7 @@ class BLEHomeController:
         Returns dict with 'image_size', 'block_size', 'chip_type', 'status_code', or None.
         """
         cmd = bytes([0xA6, node_address & 0xFF, (node_address >> 8) & 0xFF])
-        ack = await self._send_and_wait(cmd, 0x86, timeout=15.0)
+        ack = await self._send_and_wait(cmd, bytes([0x86]) + cmd[1:3], timeout=15.0)
         if ack is None or len(ack) < 12:
             return None
         if ack[11] != 0:
@@ -1156,33 +1283,61 @@ class BLEHomeController:
 
         Returns the temp file path, or None on failure.
         """
-        import tempfile
-
         import aiohttp
 
         _LOGGER.info("OTA: downloading firmware from %s", url)
+        session = async_get_clientsession(self.hass)
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
-                    if resp.status != 200:
-                        _LOGGER.error("OTA: HTTP %d downloading %s", resp.status, url)
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                if resp.status != 200:
+                    _LOGGER.error("OTA: HTTP %d downloading %s", resp.status, url)
+                    return None
+                data = bytearray()
+                async for chunk in resp.content.iter_chunked(65536):
+                    data.extend(chunk)
+                    if len(data) > FIRMWARE_MAX_FILE_SIZE:
+                        _LOGGER.error("OTA: firmware download exceeds %d bytes", FIRMWARE_MAX_FILE_SIZE)
                         return None
-                    data = await resp.read()
-                    # Preserve extension for parsing (e.g. .bin, .hex)
-                    ext = ".bin"
-                    for known_ext in (".bin", ".hex"):
-                        if url.lower().endswith(known_ext):
-                            ext = known_ext
-                            break
-                    tmp = tempfile.NamedTemporaryFile(suffix=ext, delete=False)
-                    tmp.write(data)
-                    tmp_path = tmp.name
-                    tmp.close()
-                    _LOGGER.info("OTA: downloaded %d bytes to %s", len(data), tmp_path)
-                    return tmp_path
-        except (TimeoutError, aiohttp.ClientError, OSError) as e:
+        except (TimeoutError, aiohttp.ClientError) as e:
             _LOGGER.error("OTA: failed to download firmware: %s", e)
             return None
+
+        # Preserve extension for parsing (e.g. .bin, .hex)
+        ext = ".hex" if url.lower().split("?")[0].endswith(".hex") else ".bin"
+
+        def _write() -> str:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                tmp.write(data)
+                return tmp.name
+
+        try:
+            tmp_path = await self.hass.async_add_executor_job(_write)
+        except OSError as e:
+            _LOGGER.error("OTA: failed to store downloaded firmware: %s", e)
+            return None
+        _LOGGER.info("OTA: downloaded %d bytes to %s", len(data), tmp_path)
+        return tmp_path
+
+    def _resolve_local_firmware(self, firmware_path: str) -> str | None:
+        """Resolve a local firmware path; only bundled files and allowlisted dirs are accepted.
+
+        Blocking: call from an executor.
+        """
+        path = firmware_path
+        if not os.path.isabs(path):
+            path = os.path.join(self.hass.config.path(), path)
+        path = os.path.realpath(path)
+        bundled_dir = os.path.realpath(self.hass.config.path(FIRMWARE_BIN_DIR))
+        in_bundle = os.path.commonpath([path, bundled_dir]) == bundled_dir
+        if not in_bundle and not self.hass.config.is_allowed_path(path):
+            _LOGGER.error(
+                "OTA: %s is outside %s and not in allowlist_external_dirs", path, FIRMWARE_BIN_DIR
+            )
+            return None
+        if not os.path.isfile(path):
+            _LOGGER.error("OTA: firmware file not found: %s", path)
+            return None
+        return path
 
     async def async_ota_update_node(self, node_address: int, firmware_path: str) -> dict[str, Any]:
         """Perform a full OTA firmware update on a mesh node.
@@ -1191,36 +1346,51 @@ class BLEHomeController:
         Progress is reported via HA events and persistent notifications.
         """
         result = {"success": False, "message": ""}
+        if not MESH_ADDR_MIN <= node_address <= MESH_ADDR_MAX:
+            result["message"] = f"Invalid node address 0x{node_address:04X} (unicast 0x0001-0x7FFF only)"
+            _LOGGER.error("OTA: %s", result["message"])
+            return result
+        if self._ota_lock.locked():
+            result["message"] = "Another OTA update is running on this gateway"
+            _LOGGER.error("OTA: %s", result["message"])
+            return result
+
+        async with self._ota_lock:
+            return await self._ota_update_locked(node_address, firmware_path, result)
+
+    async def _ota_update_locked(
+        self, node_address: int, firmware_path: str, result: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Run one OTA update; the caller holds _ota_lock."""
         _notify_id = f"blehome_ota_{node_address:04X}"
 
         await self._ota_notify(node_address, 0, "准备中...", _notify_id)
 
         # 0. Download firmware from URL if needed
-        actual_path = firmware_path
         cleanup_path = None
         if firmware_path.lower().startswith(("http://", "https://")):
             downloaded = await self._download_firmware(firmware_path)
             if downloaded is None:
-                result["message"] = f"Failed to download firmware from URL: {firmware_path}"
+                result["message"] = "Failed to download firmware from URL"
                 await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
                 return result
             actual_path = downloaded
             cleanup_path = downloaded
-        elif not firmware_path.startswith("/"):
-            # Resolve relative to HA config directory, or use absolute path as-is
-            config_dir = self.hass.config.path()
-            full_path = os.path.join(config_dir, firmware_path)
-            if os.path.isfile(full_path):
-                actual_path = full_path
-            elif os.path.isfile(firmware_path):
-                actual_path = firmware_path
+        else:
+            actual_path = await self.hass.async_add_executor_job(
+                self._resolve_local_firmware, firmware_path
+            )
+            if actual_path is None:
+                result["message"] = f"Firmware file not allowed or not found: {firmware_path}"
+                await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+                return result
 
         try:
             return await self._do_ota_update(node_address, actual_path, result, _notify_id)
         finally:
             if cleanup_path:
                 try:
-                    os.unlink(cleanup_path)
+                    await self.hass.async_add_executor_job(os.unlink, cleanup_path)
                 except OSError:
                     pass
             # Re-subscribe to notifications to clear any stale BLE buffer state
@@ -1288,6 +1458,12 @@ class BLEHomeController:
         _LOGGER.info("OTA: image_size=%d, block_size=%d, chip_type=0x%04X",
                      image_info["image_size"], image_info["block_size"], image_info["chip_type"])
 
+        # Flash addresses go on the wire in 8-byte units as 16 bits
+        if (start_addr + total) // 8 > 0xFFFF:
+            result["message"] = f"Firmware spans beyond the 16-bit flash address range (start 0x{start_addr:X})"
+            await self._ota_notify(node_address, 0, f"失败: {result['message']}", _notify_id)
+            return result
+
         if image_info["image_size"] < total:
             result["message"] = (
                 f"Firmware file too large ({total} bytes) "
@@ -1350,15 +1526,21 @@ class BLEHomeController:
             # Retry up to 5 times for transient failures (timeout or status!=0)
             ack = None
             for retry in range(5):
-                ack = await self._send_and_wait(bytes(cmd), 0x87, timeout=120.0)
+                if not self.connected:
+                    break
+                ack = await self._send_and_wait(bytes(cmd), bytes([0x87]) + bytes(cmd[1:5]), timeout=120.0)
                 if ack is None:
                     _LOGGER.warning("OTA UPDATE timeout at offset %d (retry %d/5)", offset, retry + 1)
                     continue
                 if len(ack) >= 6 and ack[5] == 0:
                     break  # success
                 # status != 0 — may be corrupted mesh packet, retry
-                _LOGGER.warning("OTA UPDATE retry at offset %d, status=%d (retry %d/5)",
-                                offset, ack[5], retry + 1)
+                _LOGGER.warning("OTA UPDATE retry at offset %d, status=%s (retry %d/5)",
+                                offset, ack[5] if len(ack) >= 6 else "N/A", retry + 1)
+            if ack is None and not self.connected:
+                result["message"] = f"Connection lost at offset {offset}/{total}"
+                await self._ota_notify(node_address, progress_pct, f"失败: 连接断开\n已写入: {offset}/{total} 字节", _notify_id)
+                return result
             if ack is None:
                 last = self._last_notification.hex() if self._last_notification else "none"
                 result["message"] = f"OTA UPDATE timeout at offset {offset}/{total} (last_notify={last})"
@@ -1412,6 +1594,7 @@ class BLEHomeController:
         offset = 0
         chunk_index = 0
         verify_ok = True
+        verify_mismatch = False
         while offset < total and verify_ok:
             if not self.connected:
                 _LOGGER.warning("OTA: disconnected during verify, skipping remaining")
@@ -1432,14 +1615,16 @@ class BLEHomeController:
             # Retry up to 5 times for transient failures (timeout or status!=0)
             ack = None
             for retry in range(5):
-                ack = await self._send_and_wait(bytes(cmd), 0x88, timeout=120.0)
+                if not self.connected:
+                    break
+                ack = await self._send_and_wait(bytes(cmd), bytes([0x88]) + bytes(cmd[1:5]), timeout=120.0)
                 if ack is None:
                     _LOGGER.warning("OTA VERIFY timeout at offset %d (retry %d/5)", offset, retry + 1)
                     continue
                 if len(ack) >= 6 and ack[5] == 0:
                     break
-                _LOGGER.warning("OTA VERIFY retry at offset %d, status=%d (retry %d/5)",
-                                offset, ack[5], retry + 1)
+                _LOGGER.warning("OTA VERIFY retry at offset %d, status=%s (retry %d/5)",
+                                offset, ack[5] if len(ack) >= 6 else "N/A", retry + 1)
             if ack is None:
                 last = self._last_notification.hex() if self._last_notification else "none"
                 _LOGGER.warning(
@@ -1450,8 +1635,9 @@ class BLEHomeController:
                 break
             if len(ack) < 6 or ack[5] != 0:
                 status = ack[5] if len(ack) >= 6 else "N/A"
-                _LOGGER.warning("OTA: VERIFY failed at offset %d, status=%s, skipping", offset, status)
+                _LOGGER.error("OTA: VERIFY mismatch at offset %d, status=%s", offset, status)
                 verify_ok = False
+                verify_mismatch = True
                 break
 
             offset += data_len
@@ -1472,10 +1658,24 @@ class BLEHomeController:
             _LOGGER.debug("OTA verify: %d/%d (%d%%)", offset, total, progress_pct)
 
         _t_verify = _time.monotonic() - _t_phase
+        if verify_mismatch:
+            # The node reported flash content that differs from the image: do not finalize it
+            result["message"] = f"OTA VERIFY mismatch at offset {offset}/{total}; image not finalized"
+            await self._ota_notify(node_address, progress_pct,
+                f"失败: 校验不一致，未切换固件\n位置: {offset}/{total} 字节", _notify_id,
+                progress_label="OTA 验证")
+            return result
+        if not self.connected:
+            result["message"] = f"Connection lost during verify at offset {offset}/{total}"
+            await self._ota_notify(node_address, progress_pct,
+                f"失败: 验证时连接断开\n已验证: {offset}/{total} 字节", _notify_id,
+                progress_label="OTA 验证")
+            return result
         if verify_ok:
             _LOGGER.info("OTA: VERIFY phase complete in %.1fs", _t_verify)
         else:
-            _LOGGER.warning("OTA: VERIFY skipped/partial — UPDATE chunks already confirmed per-chunk, proceeding to END")
+            # Verify is best effort per protocol: a timeout leaves the per-chunk UPDATE ACKs as proof
+            _LOGGER.warning("OTA: VERIFY timed out at offset %d; UPDATE chunks were confirmed, proceeding to END", offset)
 
         # 6. Send END command (desktop app uses 1.0s delay)
         await asyncio.sleep(1.0)
@@ -1491,9 +1691,11 @@ class BLEHomeController:
         _t_total = _time.monotonic() - _t_start
         result["success"] = True
         result["message"] = f"OTA update complete ({total} bytes in {_t_total:.0f}s)"
+        if not verify_ok:
+            result["message"] += "; verify incomplete"
         await self._ota_notify(node_address, 100,
-            f"OTA 升级成功!\n"
-            f"固件: {fw_name}\n"
+            ("OTA 升级成功!\n" if verify_ok else "OTA 升级完成（验证未全部完成）\n")
+            + f"固件: {fw_name}\n"
             f"版本: {fw_version or '?'}\n"
             f"大小: {total} 字节\n"
             f"耗时: {_t_total:.0f} 秒\n"

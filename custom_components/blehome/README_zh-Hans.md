@@ -52,7 +52,7 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 - **集成类型**: Device (设备)
 - **基础协议**: BLE GATT (面向连接)
 - **组网技术**: BLE Mesh (自愈、多跳)
-- **安全性**: 纯本地加密，利用标准蓝牙安全特性
+- **安全性**: 纯本地运行。Mesh 网内通信使用 BLE Mesh 加密；Home Assistant 与网关之间的 GATT 连接和配网过程不加密
 
 ## 安装方法
 
@@ -75,6 +75,20 @@ BLEHome 不仅仅是一个集成插件，它是为本地控制而生的全栈开
 - **官方邮箱**: [admin@blehome.org](mailto:admin@blehome.org)
 
 ## 更新日志
+
+### v2.1.0
+- **连接恢复**: 重连收尾时链路再次断开也会继续重连；旧连接迟到的断开回调不再断掉新连接
+- **卸载与关机**: 网关离线时重载或删除条目，不再残留后台重连；Home Assistant 停止时所有循环随之停止
+- **启动**: Home Assistant 重启后心跳和 Mesh 扫描正常运行；网关离线不再拖住启动约一分钟
+- **连接方式** 改用 `bleak-retry-connector`；网关离线时灯控命令立即报错，不再卡住
+- **OTA 安全**: 按节点地址和 Flash 地址匹配应答；校验不一致时中止且不切换固件；每个网关同时只允许一个 OTA；短应答不再导致升级中断；拒绝组地址和广播地址
+- **OTA 输入**: 服务仅管理员可用，且必须指定 `entry_id` 或 `mac`；本地固件须为内置文件或位于 `allowlist_external_dirs`；限制下载和镜像大小；校验 HEX 记录校验和
+- **最新固件** 按版本号选择（V3.10 排在 V3.4 之后）；选项页新增"自动"
+- **子设备**: 只有单播地址的状态上报会创建子设备；状态更新按网关区分
+- **灯光**: 最低几档亮度不再出现"开着但不亮"
+- **BTHome 转发**: 校验帧长、MAC 和 RSSI；扫描缓存设上限；逐包日志改为 debug 级别
+- **设备注册**: HA 2026.8 及以上使用 `async_get_device_by_identifier` 和 `via_device_id`，旧版本自动回退
+- **调试实体**（原始写入、BTHome 模拟）新安装默认禁用
 
 ### v2.0.2
 - **修复蓝牙卡死**: BLEHome 扫描器补上 `get_discovered_device_advertisement_data`。缺少它时，蓝牙代理一离线，Home Assistant 的备用扫描器查找就会反复抛出 `NotImplementedError`，可能导致 Home Assistant 无响应

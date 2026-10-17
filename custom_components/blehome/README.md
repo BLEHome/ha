@@ -54,7 +54,7 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 - **Integration Type**: Device
 - **Base Protocol**: BLE GATT (Connection-oriented)
 - **Networking**: BLE Mesh (Self-healing, multi-hop)
-- **Security**: Local-only, utilizing standard BLE security features.
+- **Security**: Local-only. Traffic inside the mesh uses BLE Mesh encryption; the GATT link between Home Assistant and the gateway and the provisioning exchange are not encrypted.
 
 ## Installation
 
@@ -78,6 +78,20 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 - **Email**: [admin@blehome.org](mailto:admin@blehome.org)
 
 ## Changelog
+
+### v2.1.0
+- **Connection recovery**: The gateway reconnects even if the link drops while a reconnect is finishing; a late disconnect callback from an old connection no longer tears down a new one
+- **Clean unload and shutdown**: Reloading or removing an entry while the gateway is offline no longer leaves a background reconnect running; loops stop when Home Assistant stops
+- **Startup**: The heartbeat and mesh scan keep running after a Home Assistant restart; an offline gateway no longer holds startup for about a minute
+- **Connections** use `bleak-retry-connector`; light commands fail fast with an error while the gateway is offline instead of hanging
+- **OTA safety**: ACKs are matched by node and flash address; a verify mismatch aborts without finalizing the image; one OTA at a time per gateway; short ACKs no longer crash the update; group and broadcast addresses are rejected
+- **OTA input**: Services are admin-only and need `entry_id` or `mac`; local firmware must be bundled or in `allowlist_external_dirs`; downloads and images are size-limited; HEX record checksums are verified
+- **Latest firmware** is chosen by version number (V3.10 after V3.4); the options flow offers "Auto"
+- **Sub-devices**: Only state reports from unicast addresses create sub-devices; state updates are scoped to their gateway
+- **Lights**: The lowest brightness levels no longer turn a light on at zero duty
+- **Relayed BTHome**: Frame length, MAC and RSSI are validated; the scanner cache is bounded; per-packet logs moved to debug
+- **Registry**: Uses `async_get_device_by_identifier` and `via_device_id` on HA 2026.8+, falling back on older cores
+- **Debug entities** (raw write, BTHome mock) are disabled by default for new installs
 
 ### v2.0.2
 - **Fix Bluetooth stall**: The BLEHome scanner now implements `get_discovered_device_advertisement_data`. Without it, Home Assistant's scanner fallback raised `NotImplementedError` in a loop whenever a Bluetooth proxy went offline, which could make Home Assistant unresponsive
