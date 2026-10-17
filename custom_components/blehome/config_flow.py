@@ -34,7 +34,7 @@ from .const import (
 from .firmware import scan_firmware_files
 
 _FIRMWARE_AUTO = "__auto__"
-_NEW_MESH = "__new__"
+_NEW_MESH = "new_mesh"
 
 _LOGGER = logging.getLogger(__name__)
 

@@ -120,7 +120,7 @@
   "selector": {
     "mesh": {
       "options": {
-        "__new__": "New mesh (this device becomes the gateway)"
+        "new_mesh": "New mesh (this device becomes the gateway)"
       }
     }
   }

@@ -120,7 +120,7 @@
   "selector": {
     "mesh": {
       "options": {
-        "__new__": "新建 Mesh 网（该设备作为网关）"
+        "new_mesh": "新建 Mesh 网（该设备作为网关）"
       }
     }
   }
