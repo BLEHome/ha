@@ -79,6 +79,9 @@ BLEHome is more than just an integration; it is a full-stack open standard for l
 
 ## Changelog
 
+### v2.1.2
+- **Multiple meshes**: Provisioning first asks which mesh to join: an existing gateway's mesh or a new one with this device as gateway. Network keys are remembered per gateway; the node address defaults to one above the highest address in the chosen mesh
+
 ### v2.1.1
 - **Provisioning defaults**: The node address defaults to one above the highest known address, starting at 0x0001 (0 is rejected). The mesh network key is remembered after a successful provisioning and filled in next time; a brand-new mesh gets a random key. The key field is a password field
 

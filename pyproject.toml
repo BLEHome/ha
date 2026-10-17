@@ -1,6 +1,6 @@
 [project]
 name = "blehome"
-version = "2.1.1"
+version = "2.1.2"
 description = "BLEHome Home Assistant integration"
 requires-python = ">=3.12"
 

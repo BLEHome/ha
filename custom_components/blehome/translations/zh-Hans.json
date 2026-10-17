@@ -27,10 +27,17 @@
       },
       "provision_configure": {
         "title": "配网新设备",
-        "description": "配置网络参数，将该设备添加到您的 Mesh 网络中。\n\n设备：{device}\n\n网络密钥须与现有 Mesh 网一致。首次配网成功后会记住并自动填入；全新建网时自动生成随机密钥。",
+        "description": "配置网络参数，将该设备添加到您的 Mesh 网络中。\n\n设备：{device}\n\n网络密钥须与所选 Mesh 网一致。配网成功后按网关分别记住；新建 Mesh 网时自动生成随机密钥。",
         "data": {
           "node_address": "节点地址（1–32767，如 9 或 0x0009）",
           "net_key": "网络密钥（32位十六进制）"
+        }
+      },
+      "provision_mesh": {
+        "title": "选择 Mesh 网络",
+        "description": "设备：{device}\n\n加入某个现有网关所在的 Mesh 网，或以该设备为网关新建一个 Mesh 网。",
+        "data": {
+          "mesh": "Mesh 网络"
         }
       }
     },
@@ -108,6 +115,13 @@
     "ota_update": {
       "name": "OTA 升级",
       "description": "通过网关对已连接的子设备执行固件 OTA 升级。"
+    }
+  },
+  "selector": {
+    "mesh": {
+      "options": {
+        "__new__": "新建 Mesh 网（该设备作为网关）"
+      }
     }
   }
 }

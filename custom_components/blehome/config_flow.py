@@ -34,6 +34,7 @@ from .const import (
 from .firmware import scan_firmware_files
 
 _FIRMWARE_AUTO = "__auto__"
+_NEW_MESH = "__new__"
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -181,6 +182,8 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         self._provision_device: Any = None
         self._provision_net_key: bytes = b""
         self._provision_address: int = 0
+        # Gateway entry whose mesh the device joins, or _NEW_MESH; None until chosen
+        self._provision_mesh: str | None = None
 
     async def async_step_bluetooth(
         self, discovery_info: Any
@@ -272,13 +275,20 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
     def _mesh_store(self) -> Store:
         return Store(self.hass, MESH_STORE_VERSION, MESH_STORE_KEY)
 
+    def _mesh_entry(self) -> ConfigEntry | None:
+        """Return the gateway entry of the chosen mesh, or None for a new mesh."""
+        if self._provision_mesh in (None, _NEW_MESH):
+            return None
+        return self.hass.config_entries.async_get_entry(self._provision_mesh)
+
     def _next_node_address(self) -> int | None:
-        """Return one above the highest address known to any gateway, starting at 0x0001.
+        """Return one above the highest address in the chosen mesh, starting at 0x0001.
 
         Gaps are not reused: a gap may belong to a node that is offline or unknown to HA.
         """
         known = [MESH_ADDR_MIN - 1]
-        for entry in self._async_current_entries():
+        entry = self._mesh_entry()
+        if entry:
             for addr in entry.options.get(CONF_SUBDEVICES, {}):
                 try:
                     known.append(int(addr))
@@ -288,23 +298,66 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         return candidate if candidate <= MESH_ADDR_MAX else None
 
     async def _default_net_key(self) -> str | None:
-        """Return the remembered mesh key, a fresh one for a new mesh, or None.
+        """Return the chosen mesh's remembered key, a fresh one for a new mesh, or None.
 
-        With gateways already set up but no remembered key, the existing mesh key must be
-        entered once: a random key would put the device in a different mesh.
+        An existing mesh without a remembered key needs its key entered once: a random key
+        would put the device in a different mesh.
         """
-        stored = await self._mesh_store().async_load() or {}
-        if stored.get("net_key"):
-            return stored["net_key"]
-        if not self._async_current_entries():
+        entry = self._mesh_entry()
+        if entry is None:
             return secrets.token_hex(16)
-        return None
+        stored = await self._mesh_store().async_load() or {}
+        return stored.get("keys", {}).get(entry.data[CONF_MAC].upper())
+
+    async def _remember_net_key(self) -> None:
+        """Store the key under the gateway MAC of its mesh."""
+        entry = self._mesh_entry()
+        gateway_mac = entry.data[CONF_MAC] if entry else self._provision_device.address
+        store = self._mesh_store()
+        stored = await store.async_load() or {}
+        keys = dict(stored.get("keys", {}))
+        keys[gateway_mac.upper()] = self._provision_net_key.hex()
+        await store.async_save({"keys": keys})
+
+    async def async_step_provision_mesh(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Choose the mesh the device joins: an existing gateway's mesh or a new one."""
+        if user_input is not None:
+            self._provision_mesh = user_input["mesh"]
+            return await self.async_step_provision_configure()
+
+        options = [
+            {"value": entry.entry_id, "label": entry.title}
+            for entry in self._async_current_entries()
+        ]
+        options.append({"value": _NEW_MESH, "label": "New mesh"})
+        return self.async_show_form(
+            step_id="provision_mesh",
+            data_schema=vol.Schema({
+                vol.Required("mesh", default=options[0]["value"]): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options,
+                        mode=selector.SelectSelectorMode.LIST,
+                        translation_key="mesh",
+                    )
+                ),
+            }),
+            description_placeholders={
+                "device": self._provision_device.address if self._provision_device else "?"
+            },
+        )
 
     async def async_step_provision_configure(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Configure provisioning parameters."""
         errors: dict[str, str] = {}
+
+        if self._provision_mesh is None:
+            if self._async_current_entries():
+                return await self.async_step_provision_mesh()
+            self._provision_mesh = _NEW_MESH
 
         if user_input is not None:
             key_str = user_input["net_key"].replace(" ", "").replace("-", "")
@@ -384,16 +437,16 @@ class BLEHomeConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
         if result[0]:
-            await self._mesh_store().async_save({"net_key": self._provision_net_key.hex()})
-            # If a gateway already exists, just report success — sub-devices auto-discover
-            if self._async_current_entries():
+            await self._remember_net_key()
+            # Joined an existing mesh: its gateway discovers the device on its own
+            if self._mesh_entry() is not None:
                 return self.async_abort(
                     reason="provision_success",
                     description_placeholders={
                         "address": f"0x{self._provision_address:04X}",
                     },
                 )
-            # No gateway yet — route to gateway setup automatically
+            # New mesh: this device becomes its gateway, route to gateway setup
             self._selected_device = getattr(device, "device", device)
             await asyncio.sleep(8)  # Wait for device to reboot and start advertising
             return await self.async_step_select_service()

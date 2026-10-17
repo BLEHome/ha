@@ -27,10 +27,17 @@
       },
       "provision_configure": {
         "title": "Provision New Device",
-        "description": "Configure network settings to add this device to your mesh network.\n\nDevice: {device}\n\nThe network key must be the one your mesh already uses. It is filled in after the first successful provisioning; for a brand-new mesh a random key is generated.",
+        "description": "Configure network settings to add this device to your mesh network.\n\nDevice: {device}\n\nThe network key must match the chosen mesh. It is remembered per gateway after a successful provisioning; a new mesh gets a random key.",
         "data": {
           "node_address": "Node Address (1–32767, e.g. 9 or 0x0009)",
           "net_key": "Network Key (32 hex chars / 16 bytes)"
+        }
+      },
+      "provision_mesh": {
+        "title": "Choose Mesh Network",
+        "description": "Device: {device}\n\nJoin the mesh of an existing gateway, or create a new mesh with this device as its gateway.",
+        "data": {
+          "mesh": "Mesh network"
         }
       }
     },
@@ -108,6 +115,13 @@
     "ota_update": {
       "name": "OTA update",
       "description": "Perform a firmware OTA update on a connected sub-device through the gateway."
+    }
+  },
+  "selector": {
+    "mesh": {
+      "options": {
+        "__new__": "New mesh (this device becomes the gateway)"
+      }
     }
   }
 }
